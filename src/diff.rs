@@ -2,11 +2,13 @@ use crate::config::Config;
 use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use crate::frame::Frame;
 use rayon::prelude::*;
+use std::collections::HashSet;
 
 pub struct DiffDetector {
     prev_hashes: Vec<u64>,
     prev_prev_hashes: Vec<u64>,
     tile_metadata: Vec<TileMetadata>,
+    damaged_tiles: HashSet<usize>,
     config: Config,
     frame_count: u64,
     skipped_hashes: u64,
@@ -19,6 +21,7 @@ impl DiffDetector {
             prev_hashes: Vec::new(),
             prev_prev_hashes: Vec::new(),
             tile_metadata: Vec::new(),
+            damaged_tiles: HashSet::new(),
             config,
             frame_count: 0,
             skipped_hashes: 0,
@@ -58,7 +61,7 @@ impl DiffDetector {
         }
 
         // Створюємо набір тайлів що перетинаються з damage regions
-        let mut damaged_tiles = std::collections::HashSet::new();
+        self.damaged_tiles.clear();
         if has_damage {
             for damage in &frame.damage_regions {
                 // Знаходимо всі тайли що перетинаються з цим damage region
@@ -82,7 +85,7 @@ impl DiffDetector {
 
                 for ty in tile_y_start..tile_y_end {
                     for tx in tile_x_start..tile_x_end {
-                        damaged_tiles.insert((ty * self.config.tiles_x + tx) as usize);
+                        self.damaged_tiles.insert((ty * self.config.tiles_x + tx) as usize);
                     }
                 }
             }
@@ -101,7 +104,7 @@ impl DiffDetector {
                 || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
                 |(mut hashes, mut tiles, mut indices, mut half_hashes, mut stats), i| {
                     // Якщо є damage tracking і тайл не в damaged_tiles - skip hashing
-                    if has_damage && !damaged_tiles.contains(&i) {
+                    if has_damage && !self.damaged_tiles.contains(&i) {
                         hashes.push((i, self.prev_hashes[i]));
                         stats.1 += 1; // damage_skipped
                         return (hashes, tiles, indices, half_hashes, stats);
@@ -324,6 +327,7 @@ impl DiffDetector {
         self.prev_hashes.clear();
         self.prev_prev_hashes.clear();
         self.tile_metadata.clear();
+        self.damaged_tiles.clear();
         self.frame_count = 0;
         self.skipped_hashes = 0;
         self.total_hashes = 0;
