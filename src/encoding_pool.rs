@@ -5,6 +5,7 @@ use std::thread;
 use std::sync::Arc;
 use crossbeam::channel::{bounded, Sender, Receiver};
 use crate::tile::Tile;
+use crate::tile_buffer_pool::TileBufferPool;
 
 pub struct EncodingTask {
     pub tile: Tile,
@@ -24,7 +25,7 @@ pub struct EncodingPool {
 }
 
 impl EncodingPool {
-    pub fn new(num_workers: usize) -> Self {
+    pub fn new(num_workers: usize, buffer_pool: TileBufferPool) -> Self {
         let (task_tx, task_rx) = bounded(num_workers * 2);
         let (result_tx, result_rx) = bounded(num_workers * 2);
 
@@ -32,6 +33,7 @@ impl EncodingPool {
             .map(|_worker_id| {
                 let task_rx: Receiver<EncodingTask> = task_rx.clone();
                 let result_tx: Sender<EncodedResult> = result_tx.clone();
+                let pool = buffer_pool.clone();  // Clone Arc (cheap)
 
                 thread::spawn(move || {
                     // Worker loop
@@ -47,6 +49,9 @@ impl EncodingPool {
                             tile_idx: task.tile_idx,
                             data: encoded.to_vec(),
                         });
+
+                        // Return buffer to pool immediately after encoding
+                        pool.return_buffer(task.tile_data);
                     }
                 })
             })

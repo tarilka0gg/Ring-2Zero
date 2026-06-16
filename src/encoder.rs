@@ -17,6 +17,12 @@ impl TileMerger {
             .map(|t| (t.x / tile_width, t.y / tile_height))
             .collect();
 
+        // Build spatial index once: O(m) instead of O(m×n)
+        let tile_quality_map: HashMap<(u32, u32), f32> = tiles
+            .iter()
+            .map(|t| ((t.x / tile_width, t.y / tile_height), t.quality))
+            .collect();
+
         let mut run_cols: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
 
         for tx in 0..tiles_x {
@@ -41,7 +47,7 @@ impl TileMerger {
                     let width = ((tx_end + 1) * tile_width).min(frame_width) - x;
                     let height = ((ty_end + 1) * tile_height).min(frame_height) - y;
 
-                    let quality = self.average_quality(tiles, tx_start, tx_end, ty_start, ty_end, tile_width, tile_height);
+                    let quality = self.average_quality_fast(&tile_quality_map, tx_start, tx_end, ty_start, ty_end);
 
                     merged.push(Tile::new(x, y, width, height, quality));
                     group_start = i;
@@ -94,6 +100,27 @@ impl TileMerger {
             10.0
         } else {
             qualities.iter().sum::<f32>() / qualities.len() as f32
+        }
+    }
+
+    // Spatial HashMap optimization: O(k) instead of O(m) where k = region size
+    fn average_quality_fast(&self, tile_quality_map: &HashMap<(u32, u32), f32>, tx_start: u32, tx_end: u32, ty_start: u32, ty_end: u32) -> f32 {
+        let mut sum = 0.0;
+        let mut count = 0;
+
+        for ty in ty_start..=ty_end {
+            for tx in tx_start..=tx_end {
+                if let Some(&quality) = tile_quality_map.get(&(tx, ty)) {
+                    sum += quality;
+                    count += 1;
+                }
+            }
+        }
+
+        if count == 0 {
+            10.0
+        } else {
+            sum / count as f32
         }
     }
 }
