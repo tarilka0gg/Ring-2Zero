@@ -94,48 +94,123 @@ impl DiffDetector {
             .map(|m| m.prev_half_hash)
             .collect();
 
-        let mut new_hashes = vec![0u64; total_tiles];
-        let skipped_count = std::sync::atomic::AtomicU64::new(0);
-        let damage_skipped = std::sync::atomic::AtomicU64::new(0);
+        // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata
+        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, stats) = (0..total_tiles)
+            .into_par_iter()
+            .fold(
+                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                |(mut hashes, mut tiles, mut indices, mut half_hashes, mut stats), i| {
+                    // Якщо є damage tracking і тайл не в damaged_tiles - skip hashing
+                    if has_damage && !damaged_tiles.contains(&i) {
+                        hashes.push((i, self.prev_hashes[i]));
+                        stats.1 += 1; // damage_skipped
+                        return (hashes, tiles, indices, half_hashes, stats);
+                    }
 
-        new_hashes
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(i, slot)| {
-                // Якщо є damage tracking і тайл не в damaged_tiles - пропускаємо хешування
-                if has_damage && !damaged_tiles.contains(&i) {
-                    *slot = self.prev_hashes[i];
-                    damage_skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
+                    let ty = i as u32 / self.config.tiles_x;
+                    let tx = i as u32 % self.config.tiles_x;
+                    let x = tx * tile_width;
+                    let y = ty * tile_height;
+                    let tw = if tx == self.config.tiles_x - 1 { width - x } else { tile_width };
+                    let th = if ty == tiles_y - 1 { height - y } else { tile_height };
 
-                let ty = i as u32 / self.config.tiles_x;
-                let tx = i as u32 % self.config.tiles_x;
-                let x = tx * tile_width;
-                let y = ty * tile_height;
-                let tw = if tx == self.config.tiles_x - 1 { width - x } else { tile_width };
-                let th = if ty == tiles_y - 1 { height - y } else { tile_height };
+                    // Compute half_hash ONCE
+                    let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
 
-                // Етап 1: Half хеш (кожен 2-й рядок, 50% даних)
-                let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
+                    let full_hash = if !is_first_frame && half_hash == prev_half_hashes[i] {
+                        // Half хеш не змінився → Zero-copy!
+                        stats.0 += 1; // skipped_hashes
+                        self.prev_hashes[i]
+                    } else {
+                        // Half хеш змінився → повний хеш
+                        hash_tile(frame_data, x, y, tw, th, width)
+                    };
 
-                if !is_first_frame && half_hash == prev_half_hashes[i] {
-                    // Half хеш не змінився → Zero-copy!
-                    *slot = self.prev_hashes[i];
-                    skipped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                } else {
-                    // Half хеш змінився → повний хеш
-                    *slot = hash_tile(frame_data, x, y, tw, th, width);
-                }
-            });
+                    hashes.push((i, full_hash));
 
-        let skipped = skipped_count.load(std::sync::atomic::Ordering::Relaxed);
-        let damage_skip = damage_skipped.load(std::sync::atomic::Ordering::Relaxed);
+                    // Change detection
+                    let is_changed = is_first_frame || full_hash != self.prev_hashes[i];
+
+                    if !is_changed {
+                        return (hashes, tiles, indices, half_hashes, stats);
+                    }
+
+                    // Tile changed - check if we should send it
+                    let is_dynamic = !is_first_frame
+                        && self.tile_metadata[i].last_sent_frame > 0
+                        && self.prev_prev_hashes[i] != self.prev_hashes[i]
+                        && self.prev_hashes[i] != full_hash;
+
+                    let was_sent_as_dynamic = self.tile_metadata[i].last_sent_as_dynamic;
+                    let frames_since_last = self.frame_count - self.tile_metadata[i].last_sent_frame;
+
+                    // Розраховуємо інтервал відправки
+                    let interval = if is_dynamic {
+                        self.config.target_fps.get() / self.config.dynamic_tile_fps.get()
+                    } else {
+                        self.config.target_fps.get() / self.config.static_tile_fps.get()
+                    };
+
+                    // Перевіряємо чи треба відправляти
+                    let should_send = is_first_frame
+                        || (!was_sent_as_dynamic && is_dynamic)
+                        || frames_since_last >= interval;
+
+                    if should_send {
+                        let quality = if is_dynamic {
+                            self.config.webp_quality_low
+                        } else {
+                            self.config.webp_quality_high
+                        };
+
+                        // Lock-free push to thread-local vectors
+                        tiles.push(Tile::new(x, y, tw, th, quality));
+                        indices.push(i);
+                        half_hashes.push((i, half_hash));
+
+                        // Update thread-local stats
+                        if is_dynamic {
+                            stats.3 += 1; // dynamic_sent
+                        } else {
+                            stats.4 += 1; // static_sent
+                        }
+                    } else {
+                        stats.2 += 1; // skipped_by_fps
+                    }
+
+                    (hashes, tiles, indices, half_hashes, stats)
+                },
+            )
+            .reduce(
+                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                |(mut h1, mut t1, mut i1, mut hh1, s1), (h2, t2, i2, hh2, s2)| {
+                    h1.extend(h2);
+                    t1.extend(t2);
+                    i1.extend(i2);
+                    hh1.extend(hh2);
+                    (
+                        h1,
+                        t1,
+                        i1,
+                        hh1,
+                        (s1.0 + s2.0, s1.1 + s2.1, s1.2 + s2.2, s1.3 + s2.3, s1.4 + s2.4),
+                    )
+                },
+            );
+
+        let (skipped, damage_skip, skipped_by_fps, dynamic_sent, static_sent) = stats;
+
+        // Convert Vec<(index, hash)> to indexed array
+        let mut new_hashes_array = vec![0u64; total_tiles];
+        for (i, hash) in new_hashes {
+            new_hashes_array[i] = hash;
+        }
+
         self.skipped_hashes += skipped;
         self.total_hashes += total_tiles as u64;
 
         // Логуємо статистику кожні 100 кадрів (silent in benchmark mode)
-        if self.frame_count % 100 == 0 && std::env::var("BENCHMARK_MODE").is_err() {
+        if self.frame_count % 100 == 0 && self.config.debug_mode {
             let skip_percent = (self.skipped_hashes as f64 / self.total_hashes as f64) * 100.0;
             let cpu_savings = skip_percent * 0.5;
             println!(
@@ -152,92 +227,14 @@ impl DiffDetector {
             self.total_hashes = 0;
         }
 
-        // SIMD Batch Operation: Find changed tiles
-        let changed_indices = if is_first_frame {
-            // First frame - all tiles changed
-            (0..total_tiles).collect::<Vec<usize>>()
-        } else {
-            crate::tile::find_changed_tiles(&self.prev_hashes, &new_hashes)
-        };
-
-        // Parallel processing of changed tiles - store hash results
-        use std::sync::Mutex;
-
-        let changed_tiles_mutex = Mutex::new(Vec::<Tile>::new());
-        let tile_indices_mutex = Mutex::new(Vec::<usize>::new());
-        let tile_hashes_mutex = Mutex::new(Vec::<(usize, u64)>::new()); // Store (index, hash)
-        let stats_mutex = Mutex::new((0u64, 0u64, 0u64)); // (skipped, dynamic, static)
-
-        changed_indices.par_iter().for_each(|&i| {
-            let ty = i as u32 / self.config.tiles_x;
-            let tx = i as u32 % self.config.tiles_x;
-            let x = tx * tile_width;
-            let y = ty * tile_height;
-            let tw = if tx == self.config.tiles_x - 1 { width - x } else { tile_width };
-            let th = if ty == tiles_y - 1 { height - y } else { tile_height };
-
-            // Compute half_hash once
-            let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
-
-            // Read metadata (safe - different indices)
-            let is_dynamic = !is_first_frame
-                && self.tile_metadata[i].last_sent_frame > 0
-                && self.prev_prev_hashes[i] != self.prev_hashes[i]
-                && self.prev_hashes[i] != new_hashes[i];
-
-            let was_sent_as_dynamic = self.tile_metadata[i].last_sent_as_dynamic;
-            let frames_since_last = self.frame_count - self.tile_metadata[i].last_sent_frame;
-
-            // Розраховуємо інтервал відправки
-            let interval = if is_dynamic {
-                self.config.target_fps.get() / self.config.dynamic_tile_fps.get()
-            } else {
-                self.config.target_fps.get() / self.config.static_tile_fps.get()
-            };
-
-            // Перевіряємо чи треба відправляти
-            let should_send = is_first_frame
-                || (!was_sent_as_dynamic && is_dynamic)
-                || frames_since_last >= interval;
-
-            if should_send {
-                let quality = if is_dynamic {
-                    self.config.webp_quality_low
-                } else {
-                    self.config.webp_quality_high
-                };
-
-                // Lock and push to results
-                changed_tiles_mutex.lock().unwrap().push(Tile::new(x, y, tw, th, quality));
-                tile_indices_mutex.lock().unwrap().push(i);
-                tile_hashes_mutex.lock().unwrap().push((i, half_hash)); // Store hash for reuse
-
-                // Update stats
-                let mut stats = stats_mutex.lock().unwrap();
-                if is_dynamic {
-                    stats.1 += 1; // dynamic_sent
-                } else {
-                    stats.2 += 1; // static_sent
-                }
-            } else {
-                stats_mutex.lock().unwrap().0 += 1; // skipped_by_fps
-            }
-        });
-
-        // Extract results from Mutex
-        let changed_tiles = changed_tiles_mutex.into_inner().unwrap();
-        let tile_indices = tile_indices_mutex.into_inner().unwrap();
-        let tile_hashes_map = tile_hashes_mutex.into_inner().unwrap();
-        let (skipped_by_fps, dynamic_sent, static_sent) = stats_mutex.into_inner().unwrap();
-
         // Sequential metadata update (necessary for VecDeque which is not thread-safe)
-        // Reuse computed hashes instead of recomputing
-        for (i, half_hash) in tile_hashes_map {
+        // Reuse computed hashes from parallel phase
+        for (i, half_hash) in tile_hashes_vec {
 
             let is_dynamic = !is_first_frame
                 && self.tile_metadata[i].last_sent_frame > 0
                 && self.prev_prev_hashes[i] != self.prev_hashes[i]
-                && self.prev_hashes[i] != new_hashes[i];
+                && self.prev_hashes[i] != new_hashes_array[i];
 
             let meta = &mut self.tile_metadata[i];
             meta.prev_half_hash = half_hash;
@@ -248,18 +245,18 @@ impl DiffDetector {
 
             meta.change_history.push(true);
 
-            meta.last_hash_diff = self.prev_hashes[i] ^ new_hashes[i];
+            meta.last_hash_diff = self.prev_hashes[i] ^ new_hashes_array[i];
 
             let changes = meta.change_history.count_ones();
             meta.update_frequency = changes as f32 / meta.change_history.len().max(1) as f32;
 
             self.prev_prev_hashes[i] = self.prev_hashes[i];
-            self.prev_hashes[i] = new_hashes[i];
+            self.prev_hashes[i] = new_hashes_array[i];
         }
 
         // SIMD Batch Operation: Increment unchanged_frames for all unchanged tiles
         let unchanged_indices: Vec<usize> = (0..total_tiles)
-            .filter(|i| !changed_indices.contains(i))
+            .filter(|i| !tile_indices.contains(i))
             .collect();
 
         if !unchanged_indices.is_empty() {
