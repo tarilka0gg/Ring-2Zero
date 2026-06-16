@@ -1,0 +1,24 @@
+🔍 [Adaptive] Running CPU benchmark...
+  Creating test data...
+  Warm-up (2 iterations)...
+    Warm-up iteration 1
+    Done
+    Warm-up iteration 2
+    Done
+  Running benchmark (10 iterations)...
+    Benchmark iteration 1
+    Benchmark iteration 2
+    Benchmark iteration 3
+    Benchmark iteration 4
+    Benchmark iteration 5
+    Benchmark iteration 6
+    Benchmark iteration 7
+    Benchmark iteration 8
+    Benchmark iteration 9
+    Benchmark iteration 10
+  Benchmark complete: 2.56ms total
+🚀 [Adaptive] Fast CPU detected (0.3ms/tile) → merge_gap=0 (no merging)
+WebRTC signaling server (WebSocket): ws://0.0.0.0:9001
+Target FPS: 32
+Dynamic tiles: 32 FPS
+Static tiles: 4 FPS
