@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8">
+<title>Screen Stream (Low Latency)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a0a;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #statusbar {
+    padding: 0 16px;
+    background: #111;
+    border-bottom: 1px solid #222;
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: #666;
+    flex-shrink: 0;
+    height: 36px;
+    align-items: center;
+  }
+  #statusbar span { color: #e0e0e0; }
+  #status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #333; display: inline-block; margin-right: 6px;
+    transition: background 0.3s;
+  }
+  #status-dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+  #status-dot.connecting { background: #fbbf24; }
+  #status-dot.error     { background: #f87171; }
+  #btn-mode {
+    margin-left: auto; padding: 2px 10px;
+    background: #222; border: 1px solid #444; color: #e0e0e0;
+    font-family: 'Courier New', monospace; font-size: 11px;
+    cursor: pointer; border-radius: 3px; user-select: none;
+  }
+  #btn-mode:hover { background: #333; }
+
+  #viewport {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    position: relative;
+  }
+  #viewport.scroll { overflow: auto; }
+
+  #display-canvas {
+    display: block;
+    position: absolute;
+    top: 0; left: 0;
+    background: #000;
+  }
+
+  #overlay {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center; color: #444; pointer-events: none; z-index: 10;
+  }
+  #overlay p { font-size: 14px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div id="statusbar">
+  <div><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
+  <div>Тайлів/с: <span id="tiles">—</span></div>
+  <div>Трафік: <span id="frame-size">—</span></div>
+  <div>Латентність: <span id="latency">—</span></div>
+  <div>Розмір: <span id="info">—</span></div>
+  <button id="btn-mode">FIT</button>
+</div>
+
+<div id="viewport">
+  <canvas id="display-canvas"></canvas>
+  <div id="overlay"><p>Очікування підключення через WebRTC...</p></div>
+</div>
+
+<script>
+  const viewport    = document.getElementById('viewport');
+  const dispCanvas  = document.getElementById('display-canvas');
+  const dispCtx     = dispCanvas.getContext('2d', {
+    alpha: false,
+    desynchronized: true  // Знижує латентність рендерингу
+  });
+  const overlay     = document.getElementById('overlay');
+  const statusDot   = document.getElementById('status-dot');
+  const statusText  = document.getElementById('status-text');
+  const tilesEl     = document.getElementById('tiles');
+  const frameSizeEl = document.getElementById('frame-size');
+  const latencyEl   = document.getElementById('latency');
+  const infoEl      = document.getElementById('info');
+  const btnMode     = document.getElementById('btn-mode');
+
+  let mode    = 'fit';
+  let screenW = 0;
+  let screenH = 0;
+
+  let offscreen = null;
+  let offCtx    = null;
+  let dst = { x: 0, y: 0, w: 0, h: 0 };
+
+  const pending = [];
+  let rafId = null;
+
+  function scheduleRaf() {
+    if (!rafId) rafId = requestAnimationFrame(renderFrame);
+  }
+
+  function renderFrame() {
+    rafId = null;
+    if (!offscreen) return;
+
+    // Малюємо всі pending тайли одразу
+    for (const { bitmap, x, y, w, h } of pending) {
+      offCtx.drawImage(bitmap, x, y, w, h);
+      bitmap.close();
+    }
+    pending.length = 0;
+
+    if (mode === 'fit') {
+      dispCtx.clearRect(0, 0, dispCanvas.width, dispCanvas.height);
+    }
+    dispCtx.drawImage(offscreen, dst.x, dst.y, dst.w, dst.h);
+  }
+
+  function applyMode() {
+    if (!screenW) return;
+    const dpr  = window.devicePixelRatio || 1;
+    const rect = viewport.getBoundingClientRect();
+    const vw   = rect.width;
+    const vh   = rect.height;
+    if (!vw || !vh) return;
+
+    if (mode === 'fit') {
+      viewport.classList.remove('scroll');
+      btnMode.textContent = 'FIT';
+      const scale = Math.min(vw / screenW, vh / screenH);
+      const dw = Math.round(screenW * scale);
+      const dh = Math.round(screenH * scale);
+      dst = {
+        x: Math.round((vw - dw) / 2) * dpr,
+        y: Math.round((vh - dh) / 2) * dpr,
+        w: dw * dpr,
+        h: dh * dpr
+      };
+      dispCanvas.width        = Math.round(vw * dpr);
+      dispCanvas.height       = Math.round(vh * dpr);
+      dispCanvas.style.width  = vw + 'px';
+      dispCanvas.style.height = vh + 'px';
+    } else {
+      viewport.classList.add('scroll');
+      btnMode.textContent = '1:1';
+      dst = { x: 0, y: 0, w: screenW, h: screenH };
+      dispCanvas.width        = screenW;
+      dispCanvas.height       = screenH;
+      dispCanvas.style.width  = screenW + 'px';
+      dispCanvas.style.height = screenH + 'px';
+    }
+    if (offscreen) scheduleRaf();
+  }
+
+  function initFrame(w, h) {
+    screenW = w;
+    screenH = h;
+    offscreen = new OffscreenCanvas(w, h);
+    offCtx    = offscreen.getContext('2d', { alpha: false });
+    infoEl.textContent = w + 'x' + h;
+    requestAnimationFrame(applyMode);
+  }
+
+  btnMode.addEventListener('click', () => {
+    mode = mode === 'fit' ? 'scroll' : 'fit';
+    applyMode();
+  });
+
+  window.addEventListener('resize', () => {
+    requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
+  });
+
+  // ─── Статистика ───────────────────────────────────────────────────────────
+
+  let tileCount     = 0;
+  let totalBytes    = 0;
+  let lastStatTime  = 0;
+  let latencySum    = 0;
+  let latencyCount  = 0;
+
+  function resetStats() {
+    tileCount     = 0;
+    totalBytes    = 0;
+    lastStatTime  = Date.now();
+    latencySum    = 0;
+    latencyCount  = 0;
+  }
+
+  // ─── WebRTC з мінімальною латентністю ────────────────────────────────────
+
+  let pc = null;
+  let dataChannel = null;
+  let ws = null;
+  let reconnectAttempts = 0;
+  let maxReconnectAttempts = 5;
+  let reconnectDelay = 1000;
+  let isConnecting = false;
+  let connectionTimeout = null;
+
+  function cleanup() {
+    if (connectionTimeout) {
+      clearTimeout(connectionTimeout);
+      connectionTimeout = null;
+    }
+    if (dataChannel) {
+      dataChannel.close();
+      dataChannel = null;
+    }
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+      ws = null;
+    }
+    isConnecting = false;
+  }
+
+  async function connect() {
+    if (isConnecting) {
+      console.log('Already connecting, skipping...');
+      return;
+    }
+
+    isConnecting = true;
+    resetStats();
+    cleanup();
+
+    statusDot.className = 'connecting';
+    statusText.textContent = `Підключення... (спроба ${reconnectAttempts + 1})`;
+
+    try {
+      const wsUrl = `ws://${window.location.host}`;
+      console.log('Connecting to:', wsUrl);
+      ws = new WebSocket(wsUrl);
+
+      // Короткий таймаут для локального з'єднання
+      connectionTimeout = setTimeout(() => {
+        console.error('Connection timeout');
+        cleanup();
+        scheduleReconnect();
+      }, 10000);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected, waiting for offer...');
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          if (message.type === 'offer') {
+            console.log('Received offer from server');
+
+            // Створюємо RTCPeerConnection без STUN для локального з'єднання
+            pc = new RTCPeerConnection({
+              iceServers: []
+            });
+
+            // Логування стану з'єднання
+            pc.oniceconnectionstatechange = () => {
+              console.log('ICE connection state:', pc.iceConnectionState);
+
+              if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                reconnectAttempts = 0;
+              }
+
+              if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                console.error('ICE connection failed/disconnected');
+                scheduleReconnect();
+              }
+            };
+
+            pc.onconnectionstatechange = () => {
+              console.log('Connection state:', pc.connectionState);
+
+              if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                console.error('Connection failed/disconnected');
+                scheduleReconnect();
+              }
+            };
+
+            // Відправляємо ICE candidates на сервер
+            pc.onicecandidate = (event) => {
+              if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'candidate',
+                  candidate: event.candidate.toJSON()
+                }));
+              }
+            };
+
+            // Обробник DataChannel від сервера
+            pc.ondatachannel = (event) => {
+              console.log('DataChannel received from server:', event.channel.label);
+              dataChannel = event.channel;
+              dataChannel.binaryType = 'arraybuffer';
+
+              dataChannel.onopen = () => {
+                if (connectionTimeout) {
+                  clearTimeout(connectionTimeout);
+                  connectionTimeout = null;
+                }
+
+                statusDot.className    = 'connected';
+                statusText.textContent = 'Підключено';
+                overlay.style.display  = 'none';
+                isConnecting = false;
+                reconnectAttempts = 0;
+
+                console.log('DataChannel opened');
+              };
+
+              dataChannel.onmessage = (event) => {
+                const receiveTime = performance.now();
+                const data = event.data;
+                const view = new DataView(data);
+
+                // Header-пакет (маркер 0xFFFF)
+                if (view.getUint16(0, true) === 0xFFFF) {
+                  const w = view.getUint16(2, true);
+                  const h = view.getUint16(4, true);
+                  initFrame(w, h);
+                  return;
+                }
+
+                // Батч тайлів
+                let offset = 0;
+                const now = Date.now();
+
+                while (offset < data.byteLength) {
+                  const tileLen = view.getUint32(offset, true);
+                  offset += 4;
+
+                  const tileData = data.slice(offset, offset + tileLen);
+                  const tileView = new DataView(tileData);
+                  const x = tileView.getUint16(0, true);
+                  const y = tileView.getUint16(2, true);
+                  const w = tileView.getUint16(4, true);
+                  const h = tileView.getUint16(6, true);
+
+                  // Декодуємо WebP асинхронно
+                  createImageBitmap(new Blob([tileData.slice(8)], { type: 'image/webp' }))
+                    .then(bitmap => {
+                      pending.push({ bitmap, x, y, w, h });
+                      scheduleRaf();
+
+                      // Вимірюємо латентність декодування
+                      const decodeTime = performance.now() - receiveTime;
+                      latencySum += decodeTime;
+                      latencyCount++;
+                    })
+                    .catch(e => console.error('WebP decode failed:', e));
+
+                  tileCount++;
+                  totalBytes += tileLen;
+                  offset += tileLen;
+                }
+
+                // Статистика
+                if (now - lastStatTime >= 1000) {
+                  tilesEl.textContent    = tileCount;
+                  frameSizeEl.textContent = (totalBytes * 8 / 1000).toFixed(0) + ' кбіт/с';
+                  latencyEl.textContent  = latencyCount
+                    ? (latencySum / latencyCount).toFixed(1) + ' мс'
+                    : '—';
+
+                  tileCount     = 0;
+                  totalBytes    = 0;
+                  latencySum    = 0;
+                  latencyCount  = 0;
+                  lastStatTime  = now;
+                }
+              };
+
+              dataChannel.onclose = () => {
+                console.log('DataChannel closed');
+                scheduleReconnect();
+              };
+
+              dataChannel.onerror = (err) => {
+                console.error('DataChannel error:', err);
+                scheduleReconnect();
+              };
+            };
+
+            // Встановлюємо offer як remote description
+            await pc.setRemoteDescription({
+              type: 'offer',
+              sdp: message.sdp
+            });
+
+            // Створюємо answer
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            // Чекаємо ICE gathering (короткий таймаут для локального з'єднання)
+            if (pc.iceGatheringState !== 'complete') {
+              await Promise.race([
+                new Promise((resolve) => {
+                  const checkState = () => {
+                    console.log('ICE gathering state:', pc.iceGatheringState);
+                    if (pc.iceGatheringState === 'complete') {
+                      pc.removeEventListener('icegatheringstatechange', checkState);
+                      resolve();
+                    }
+                  };
+                  pc.addEventListener('icegatheringstatechange', checkState);
+                }),
+                new Promise(resolve => setTimeout(resolve, 3000))
+              ]);
+            }
+
+            console.log('Sending answer to server');
+
+            // Відправляємо answer
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: 'answer',
+                sdp: pc.localDescription.sdp
+              }));
+            }
+          } else if (message.type === 'candidate' && pc) {
+            // Отримали ICE candidate від сервера
+            if (message.candidate) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+              } catch (e) {
+                console.error('Error adding ICE candidate:', e);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Message handling error:', err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        scheduleReconnect();
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        if (!dataChannel || dataChannel.readyState !== 'open') {
+          scheduleReconnect();
+        }
+      };
+
+    } catch (err) {
+      console.error('Connection failed:', err);
+      scheduleReconnect();
+    }
+  }
+
+  function scheduleReconnect() {
+    cleanup();
+
+    statusDot.className    = 'error';
+    statusText.textContent = 'Відключено';
+    overlay.style.display  = 'block';
+    screenW = 0;
+    screenH = 0;
+
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      statusText.textContent = 'Не вдалося підключитися. Оновіть сторінку.';
+      console.error('Max reconnect attempts reached');
+      return;
+    }
+
+    reconnectAttempts++;
+    const delay = Math.min(reconnectDelay * reconnectAttempts, 10000);
+
+    console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${maxReconnectAttempts})`);
+    statusText.textContent = `Повторне підключення через ${(delay/1000).toFixed(0)}с...`;
+
+    setTimeout(connect, delay);
+  }
+
+  // Обробка видимості сторінки
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      console.log('Page hidden');
+    } else {
+      console.log('Page visible');
+      // Перевіряємо з'єднання при поверненні на сторінку
+      if (!dataChannel || dataChannel.readyState !== 'open') {
+        scheduleReconnect();
+      }
+    }
+  });
+
+  connect();
+</script>
+</body>
+</html>
