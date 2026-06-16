@@ -134,8 +134,8 @@ impl DiffDetector {
         self.skipped_hashes += skipped;
         self.total_hashes += total_tiles as u64;
 
-        // Логуємо статистику кожні 100 кадрів
-        if self.frame_count % 100 == 0 {
+        // Логуємо статистику кожні 100 кадрів (silent in benchmark mode)
+        if self.frame_count % 100 == 0 && std::env::var("BENCHMARK_MODE").is_err() {
             let skip_percent = (self.skipped_hashes as f64 / self.total_hashes as f64) * 100.0;
             let cpu_savings = skip_percent * 0.5;
             println!(
@@ -285,8 +285,8 @@ impl DiffDetector {
             }
         }
 
-        // Логуємо статистику адаптивного FPS
-        if self.frame_count % 100 == 0 {
+        // Логуємо статистику адаптивного FPS (silent in benchmark mode)
+        if self.frame_count % 100 == 0 && std::env::var("BENCHMARK_MODE").is_err() {
             println!("[Frame {}] Changed tiles: {}", self.frame_count, changed_tiles.len());
             if skipped_by_fps > 0 {
                 println!("[Adaptive FPS] Skipped {} tiles due to FPS throttling", skipped_by_fps);
