@@ -1,10 +1,11 @@
 /// Thread-safe pool of reusable tile buffers
 /// Reduces allocations by reusing Vec<u8> buffers for tile extraction
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use crossbeam::queue::SegQueue;
 
 pub struct TileBufferPool {
-    buffers: Arc<Mutex<Vec<Vec<u8>>>>,
+    buffers: Arc<SegQueue<Vec<u8>>>,
     buffer_size: usize,
 }
 
@@ -15,7 +16,7 @@ impl TileBufferPool {
     /// * `buffer_size` - Size of each buffer in bytes (e.g., 48*27*4 for typical tile)
     /// * `initial_count` - Number of buffers to pre-allocate
     pub fn new(buffer_size: usize, initial_count: usize) -> Self {
-        let mut buffers = Vec::with_capacity(initial_count);
+        let buffers = SegQueue::new();
 
         // Pre-allocate buffers
         for _ in 0..initial_count {
@@ -23,16 +24,14 @@ impl TileBufferPool {
         }
 
         Self {
-            buffers: Arc::new(Mutex::new(buffers)),
+            buffers: Arc::new(buffers),
             buffer_size,
         }
     }
 
     /// Get a buffer from the pool (or allocate a new one if pool is empty)
     pub fn get(&self) -> Vec<u8> {
-        let mut buffers = self.buffers.lock().unwrap();
-
-        if let Some(mut buffer) = buffers.pop() {
+        if let Some(mut buffer) = self.buffers.pop() {
             // Reuse existing buffer
             buffer.clear();
             buffer.resize(self.buffer_size, 0);
@@ -45,18 +44,16 @@ impl TileBufferPool {
 
     /// Return a buffer to the pool for reuse
     pub fn return_buffer(&self, buffer: Vec<u8>) {
-        let mut buffers = self.buffers.lock().unwrap();
-
         // Only keep buffers that match our size (avoid memory bloat)
         if buffer.capacity() >= self.buffer_size && buffer.capacity() < self.buffer_size * 2 {
-            buffers.push(buffer);
+            self.buffers.push(buffer);
         }
         // Otherwise drop the buffer (will be deallocated)
     }
 
     /// Get current pool size (for debugging/monitoring)
     pub fn available_buffers(&self) -> usize {
-        self.buffers.lock().unwrap().len()
+        self.buffers.len()
     }
 }
 
