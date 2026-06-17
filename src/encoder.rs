@@ -85,24 +85,6 @@ impl TileMerger {
         runs
     }
 
-    fn average_quality(&self, tiles: &[Tile], tx_start: u32, tx_end: u32, ty_start: u32, ty_end: u32, tile_width: u32, tile_height: u32) -> f32 {
-        let qualities: Vec<f32> = tiles
-            .iter()
-            .filter(|t| {
-                let tx = t.x / tile_width;
-                let ty = t.y / tile_height;
-                tx >= tx_start && tx <= tx_end && ty >= ty_start && ty <= ty_end
-            })
-            .map(|t| t.quality)
-            .collect();
-
-        if qualities.is_empty() {
-            10.0
-        } else {
-            qualities.iter().sum::<f32>() / qualities.len() as f32
-        }
-    }
-
     // Spatial HashMap optimization: O(k) instead of O(m) where k = region size
     fn average_quality_fast(&self, tile_quality_map: &HashMap<(u32, u32), f32>, tx_start: u32, tx_end: u32, ty_start: u32, ty_end: u32) -> f32 {
         let mut sum = 0.0;

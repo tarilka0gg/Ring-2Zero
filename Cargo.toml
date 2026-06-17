@@ -1,6 +1,6 @@
 [package]
 name = "screen-streamer"
-version = "0.176.0"
+version = "0.179.0"
 edition = "2021"
 
 [lib]
