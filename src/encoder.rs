@@ -141,8 +141,8 @@ impl TileEncoder {
                 // Перевіряємо кеш
                 if let Some(cached) = &metadata.cached_encoded {
                     if metadata.cached_hash == tile_hash {
-                        // Cache hit! Пропускаємо encoding
-                        return cached.clone();
+                        // Cache hit! Convert Arc to Vec for return
+                        return cached.to_vec();
                     }
                 }
 
@@ -152,18 +152,16 @@ impl TileEncoder {
                     let tile_size = (tile.width * tile.height * 4) as usize;
                     buf.resize(tile_size, 0);
 
-                    if tile.width == frame_width {
-                        let src_offset = (tile.y * frame_width * 4) as usize;
-                        buf.copy_from_slice(&frame_data[src_offset..src_offset + tile_size]);
-                    } else {
-                        for row in 0..tile.height {
-                            let src_offset = (((tile.y + row) * frame_width + tile.x) * 4) as usize;
-                            let dst_offset = (row * tile.width * 4) as usize;
-                            let len = (tile.width * 4) as usize;
-                            buf[dst_offset..dst_offset + len]
-                                .copy_from_slice(&frame_data[src_offset..src_offset + len]);
-                        }
-                    }
+                    // Extract tile data with SIMD optimization
+                    crate::tile_extract::extract_tile(
+                        frame_data,
+                        &mut buf,
+                        tile.x,
+                        tile.y,
+                        tile.width,
+                        tile.height,
+                        frame_width,
+                    );
 
                     webp::Encoder::from_rgba(&buf, tile.width, tile.height)
                         .encode(tile.quality)
@@ -187,20 +185,16 @@ impl TileEncoder {
                     let tile_size = (tile.width * tile.height * 4) as usize;
                     buf.resize(tile_size, 0);
 
-                    // Оптимізація: якщо тайл повної ширини, копіюємо одним блоком
-                    if tile.width == frame_width {
-                        let src_offset = (tile.y * frame_width * 4) as usize;
-                        buf.copy_from_slice(&frame_data[src_offset..src_offset + tile_size]);
-                    } else {
-                        // Інакше копіюємо рядок за рядком
-                        for row in 0..tile.height {
-                            let src_offset = (((tile.y + row) * frame_width + tile.x) * 4) as usize;
-                            let dst_offset = (row * tile.width * 4) as usize;
-                            let len = (tile.width * 4) as usize;
-                            buf[dst_offset..dst_offset + len]
-                                .copy_from_slice(&frame_data[src_offset..src_offset + len]);
-                        }
-                    }
+                    // Extract tile data with SIMD optimization
+                    crate::tile_extract::extract_tile(
+                        frame_data,
+                        &mut buf,
+                        tile.x,
+                        tile.y,
+                        tile.width,
+                        tile.height,
+                        frame_width,
+                    );
 
                     webp::Encoder::from_rgba(&buf, tile.width, tile.height)
                         .encode(tile.quality)
