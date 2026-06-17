@@ -36,9 +36,7 @@ impl DiffDetector {
         let width = frame.width;
         let height = frame.height;
 
-        let tile_width = width / self.config.tiles_x;
-        let tile_height = tile_width * height / width;
-        let tiles_y = (height + tile_height - 1) / tile_height;
+        let (tile_width, tile_height, tiles_y) = self.config.calculate_tile_dimensions(width, height);
         let total_tiles = (tiles_y * self.config.tiles_x) as usize;
 
         let is_first_frame = self.prev_hashes.is_empty();

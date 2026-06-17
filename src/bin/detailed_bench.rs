@@ -127,9 +127,7 @@ fn benchmark_scenario(config: &Config, scenario: &str, description: &str, frames
     let mut diff_detector = DiffDetector::new(config.clone());
     let tile_merger = TileMerger::new(config.merge_gap);
 
-    let tile_width = width / config.tiles_x;
-    let tile_height = tile_width * height / width;
-    let tiles_y = (height + tile_height - 1) / tile_height;
+    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
 
     // Baseline frame - створюємо реалістичний статичний фон
     let baseline = generate_scenario_frame(width, height, 0, scenario);

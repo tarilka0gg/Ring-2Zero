@@ -59,9 +59,7 @@ struct TimingBreakdown {
 
 impl FrameProfiler {
     fn new(config: Config, width: u32, height: u32) -> Self {
-        let tile_width = width / config.tiles_x;
-        let tile_height = tile_width * height / width;
-        let tiles_y = (height + tile_height - 1) / tile_height;
+        let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
 
         Self {
             diff_detector: DiffDetector::new(config.clone()),

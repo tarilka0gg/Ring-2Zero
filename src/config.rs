@@ -52,6 +52,15 @@ impl Config {
         std::time::Duration::from_millis(1000 / self.target_fps.get())
     }
 
+    /// Calculate tile dimensions for given frame size
+    /// Returns (tile_width, tile_height, tiles_y)
+    pub fn calculate_tile_dimensions(&self, width: u32, height: u32) -> (u32, u32, u32) {
+        let tile_width = width / self.tiles_x;
+        let tile_height = tile_width * height / width;
+        let tiles_y = (height + tile_height - 1) / tile_height;
+        (tile_width, tile_height, tiles_y)
+    }
+
     /// Auto-detect optimal merge_gap based on CPU encoding speed
     pub fn with_auto_merge_gap() -> Self {
         let mut config = Self::default();
@@ -71,13 +80,13 @@ impl Config {
         // Determine merge_gap based on performance
         config.merge_gap = if ms_per_tile > 20.0 {
             println!("🐌 [Adaptive] Slow CPU detected ({:.1}ms/tile) → merge_gap=3 (aggressive merging)", ms_per_tile);
-            3  // Weak: 40 tiles → ~8-12 merged tiles
+            3  // Aggressive: reduces tiles by 60-80%
         } else if ms_per_tile > 10.0 {
             println!("⚡ [Adaptive] Medium CPU detected ({:.1}ms/tile) → merge_gap=1 (moderate merging)", ms_per_tile);
-            1  // Medium: 40 tiles → ~20-25 merged tiles
+            1  // Moderate: reduces tiles by 30-50%
         } else {
             println!("🚀 [Adaptive] Fast CPU detected ({:.1}ms/tile) → merge_gap=0 (no merging)", ms_per_tile);
-            0  // Strong: 40 tiles → ~35-40 tiles (almost no merge)
+            0  // Minimal: keeps most tiles separate for quality
         };
 
         // Save to cache

@@ -196,9 +196,7 @@ fn benchmark_scenario_advanced(
     let width = 1920u32;
     let height = 1080u32;
 
-    let tile_width = width / config.tiles_x;
-    let tile_height = tile_width * height / width;
-    let tiles_y = (height + tile_height - 1) / tile_height;
+    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
 
     // Run multiple times and collect results
     let mut run_results = Vec::new();
@@ -334,9 +332,9 @@ fn benchmark_scenario_advanced(
 
     let thread_efficiency = parallel_speedup / num_workers as f64;
 
-    // Compression metrics
-    let raw_bytes = avg_tiles_after * 48 * 27 * 4; // Average tile size
-    let compressed_bytes = raw_bytes / 10; // ~10:1 WebP compression
+    // Compression metrics (use actual tile dimensions)
+    let raw_bytes = (avg_tiles_after as f64 * tile_width as f64 * tile_height as f64 * 4.0) as usize;
+    let compressed_bytes = (raw_bytes as f64 / 10.0) as usize; // ~10:1 WebP compression
 
     // For percentiles, use estimated distribution
     let p50 = avg_frame_latency_us;
