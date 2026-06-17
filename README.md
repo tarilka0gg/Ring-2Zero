@@ -15,20 +15,21 @@ High-performance Wayland screen streaming server with WebRTC support.
 
 ## 📊 Performance
 
-Real-world benchmarks with tile merging (June 17, 2026, v0.159, averaged over 10 runs):
+Real-world benchmarks with tile merging (June 17, 2026, v0.160, averaged over 10 runs):
 
 | Scenario | Time/Frame | FPS | vs Target (32 FPS) |
 |----------|-----------|-----|-------------------|
-| 🟢 Static content | 0.39 ms | **2555 FPS** | 79.8× faster |
-| 🟡 Moderate activity | 0.51 ms | **1979 FPS** | 61.8× faster |
-| 🟠 Active work | 1.28 ms | **779 FPS** | 24.3× faster |
-| 🔴 Video window | 0.69 ms | **1441 FPS** | 45.0× faster |
+| 🟢 Static content | 0.37 ms | **2732 FPS** | 85.4× faster |
+| 🟡 Moderate activity | 0.44 ms | **2271 FPS** | 71.0× faster |
+| 🟠 Active work | 0.96 ms | **1043 FPS** | 32.6× faster |
+| 🔴 Video window | 0.65 ms | **1531 FPS** | 47.8× faster |
 
 **Key optimizations:**
-- **Tile merging**: 85-98% tile reduction (e.g., 724 → 13 tiles)
-- **Cache hits**: 56-68% tiles served from cache
+- **Tile grid optimization**: 20×20 grid (96×54px tiles) reduces overhead by 75% vs 40×40
+- **Tile merging**: 83-99% tile reduction (e.g., 20627 → 247 tiles)
+- **Cache hits**: 41-67% tiles served from cache
 - **Zero-copy hashing**: 54-99% tiles skipped, ~27-50% CPU savings
-- **Adaptive FPS**: Dynamic 60 FPS for changed content, 8 FPS for static
+- **Adaptive FPS**: Dynamic 32 FPS for changed content, 4 FPS for static
 - **Variance**: <4% across multiple runs (highly stable)
 - **Thread safety**: All data races fixed with snapshot pattern (+9% performance boost)
 
