@@ -162,7 +162,7 @@ impl StreamServer {
                     .collect();
 
                 // Clone cache data before parallel work to avoid borrowing issues
-                let cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
+                let cached_data: Vec<Option<Arc<[u8]>>> = sorted_tile_indices.iter()
                     .map(|&idx| {
                         let metadata = diff_detector.get_metadata(idx);
                         if metadata.cached_hash == tile_hashes[tile_hashes.iter().position(|_| true).unwrap_or(0)] {
@@ -182,10 +182,10 @@ impl StreamServer {
                     let tile_idx = sorted_tile_indices[i];
                     let _tile_hash = tile_hashes[i];
 
-                    // Check cache first (using pre-cloned data)
+                    // Check cache first (using pre-cloned Arc - cheap pointer copy)
                     if let Some(ref cached) = cached_data[i] {
-                        // Cache hit - use cached data directly
-                        encoded[i] = cached.clone();
+                        // Cache hit - use cached data directly (Arc clone is just pointer copy)
+                        encoded[i] = cached.to_vec();
                         continue;
                     }
 
@@ -199,19 +199,16 @@ impl StreamServer {
                         tile_buffer.resize(tile_size, 0);
                     }
 
-                    // Extract tile data (row-by-row copy)
-                    if tile.width == width {
-                        let src_offset = (tile.y * width * 4) as usize;
-                        tile_buffer.copy_from_slice(&frame.rgba[src_offset..src_offset + tile_size]);
-                    } else {
-                        for row in 0..tile.height {
-                            let src_offset = (((tile.y + row) * width + tile.x) * 4) as usize;
-                            let dst_offset = (row * tile.width * 4) as usize;
-                            let len = (tile.width * 4) as usize;
-                            tile_buffer[dst_offset..dst_offset + len]
-                                .copy_from_slice(&frame.rgba[src_offset..src_offset + len]);
-                        }
-                    }
+                    // Extract tile data using SIMD-optimized function
+                    crate::tile_extract::extract_tile(
+                        &frame.rgba,
+                        &mut tile_buffer,
+                        tile.x,
+                        tile.y,
+                        tile.width,
+                        tile.height,
+                        width,
+                    );
 
                     // Submit to encoding pool
                     let task = crate::encoding_pool::EncodingTask {
@@ -261,24 +258,18 @@ impl StreamServer {
                         let max_height = height.saturating_sub(tile.y).min(tile.height);
                         let max_width = width.saturating_sub(tile.x).min(tile.width);
 
-                        if tile.width == width && max_height == tile.height {
-                            let src_offset = (tile.y * width * 4) as usize;
-                            tile_buffer.copy_from_slice(&frame.rgba[src_offset..src_offset + tile_size]);
-                        } else {
-                            for row in 0..max_height {
-                                let src_offset = (((tile.y + row) * width + tile.x) * 4) as usize;
-                                let dst_offset = (row * tile.width * 4) as usize;
-                                let len = (max_width * 4) as usize;
+                        // Extract tile data using SIMD-optimized function with bounds checking
+                        crate::tile_extract::extract_tile(
+                            &frame.rgba,
+                            &mut tile_buffer,
+                            tile.x,
+                            tile.y,
+                            max_width,
+                            max_height,
+                            width,
+                        );
 
-                                // Extra safety check
-                                if src_offset + len <= frame.rgba.len() {
-                                    tile_buffer[dst_offset..dst_offset + len]
-                                        .copy_from_slice(&frame.rgba[src_offset..src_offset + len]);
-                                }
-                            }
-                        }
-
-                        webp::Encoder::from_rgba(&tile_buffer, tile.width, tile.height)
+                        webp::Encoder::from_rgba(&tile_buffer, max_width, max_height)
                             .encode(tile.quality)
                             .to_vec()
                     });
@@ -291,7 +282,7 @@ impl StreamServer {
                 for (i, &tile_idx) in sorted_tile_indices.iter().enumerate() {
                     let metadata = &mut tile_metadata[tile_idx];
                     if !encoded[i].is_empty() {
-                        metadata.cached_encoded = Some(encoded[i].clone());
+                        metadata.cached_encoded = Some(Arc::from(encoded[i].as_slice()));
                         metadata.cached_hash = tile_hashes[i];
                     }
                 }
