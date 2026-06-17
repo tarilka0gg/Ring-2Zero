@@ -1,6 +1,6 @@
 [package]
 name = "screen-streamer"
-version = "0.1.0"
+version = "0.159.0"
 edition = "2021"
 
 [lib]
@@ -30,6 +30,10 @@ path = "src/bin/hash_analyzer.rs"
 [[bin]]
 name = "modern_hash_bench"
 path = "src/bin/modern_hash_bench.rs"
+
+[[bin]]
+name = "advanced_bench"
+path = "src/bin/advanced_bench.rs"
 
 [dependencies]
 

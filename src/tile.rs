@@ -396,13 +396,20 @@ pub struct TileMetadata {
     pub is_dynamic: bool,
     pub last_sent_as_dynamic: bool,
     pub change_history: CircularBuffer,  // Замінили VecDeque на CircularBuffer
-    pub update_frequency: f32,
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 
     // Optimization #3: Cache encoded tile data
     pub cached_encoded: Option<Vec<u8>>,
     pub cached_hash: u64,
+}
+
+impl TileMetadata {
+    /// Lazy computation of update frequency (only when needed, e.g., debug logs)
+    pub fn update_frequency(&self) -> f32 {
+        let changes = self.change_history.count_ones();
+        changes as f32 / self.change_history.len().max(1) as f32
+    }
 }
 
 impl Default for TileMetadata {
@@ -413,7 +420,6 @@ impl Default for TileMetadata {
             is_dynamic: false,
             last_sent_as_dynamic: false,
             change_history: CircularBuffer::default(),
-            update_frequency: 0.0,
             last_hash_diff: 0,
             prev_half_hash: 0,
             cached_encoded: None,

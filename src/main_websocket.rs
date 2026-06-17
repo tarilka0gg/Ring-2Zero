@@ -233,7 +233,7 @@ fn sleep_until(deadline: Instant) {
 }
 
 fn calculate_priority(tile: &Tile, metadata: &crate::tile::TileMetadata, width: u32, height: u32, config: &Config) -> f32 {
-    let frequency_score = metadata.update_frequency;
+    let frequency_score = metadata.update_frequency();
     let change_speed = (metadata.last_hash_diff.count_ones() as f32) / 64.0;
     let center_x = width / 2;
     let center_y = height / 2;
