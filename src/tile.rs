@@ -1,5 +1,4 @@
 use xxhash_rust::xxh3::Xxh3;
-use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -400,8 +399,8 @@ pub struct TileMetadata {
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 
-    // Optimization #3: Cache encoded tile data with Arc for zero-copy sharing
-    pub cached_encoded: Option<Arc<[u8]>>,
+    // Optimization #3: Cache encoded tile data
+    pub cached_encoded: Option<Vec<u8>>,
     pub cached_hash: u64,
 }
 
