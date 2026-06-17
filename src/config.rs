@@ -31,7 +31,7 @@ impl Default for Config {
         Self {
             ws_port: 9001,
             target_fps: std::num::NonZeroU64::new(32).unwrap(),
-            tiles_x: 40,
+            tiles_x: 20,
             webp_quality_low: 0.5,
             webp_quality_high: 8.0,
             merge_gap: 0,
