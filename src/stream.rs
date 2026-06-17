@@ -79,11 +79,13 @@ impl StreamServer {
             let tile_merger = TileMerger::new(config.merge_gap);
             let mut screen_size: Option<(u32, u32)> = None;
 
-            // Create tile buffer pool (typical tile: 48x27x4 = 5184 bytes)
-            // Pre-allocate 50 buffers for common scenarios
+            // Create tile buffer pool
+            // With tiles_x=20: 96×54px = 20,736 bytes
+            // With tiles_x=16: 120×68px = 32,640 bytes (worst case for common configs)
+            // Allocate for worst case to avoid reallocations
             let tile_buffer_pool = crate::tile_buffer_pool::TileBufferPool::new(
-                48 * 27 * 4,  // Typical tile size
-                50            // Initial buffer count
+                120 * 68 * 4,  // Max tile size for tiles_x=16 on 1920×1080
+                50             // Initial buffer count
             );
 
             // Create encoding pool with worker threads (passes buffer_pool for reuse)
