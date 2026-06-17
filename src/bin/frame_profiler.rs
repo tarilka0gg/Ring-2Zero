@@ -6,6 +6,7 @@ use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
 use std::time::Instant;
+use std::sync::Arc;
 
 fn generate_test_frame(width: u32, height: u32, frame_num: usize, change_pct: f32) -> Vec<u8> {
     let mut rgba = vec![100u8; (width * height * 4) as usize];
@@ -158,7 +159,8 @@ impl FrameProfiler {
                 for metadata in self.diff_detector.get_all_metadata() {
                     if metadata.cached_hash == merged_hash && metadata.cached_encoded.is_some() {
                         timing.cache_hits += 1;
-                        return metadata.cached_encoded.clone();
+                        // Convert Arc to Vec for use
+                        return metadata.cached_encoded.as_ref().map(|arc| arc.to_vec());
                     }
                 }
                 None
@@ -221,7 +223,8 @@ impl FrameProfiler {
                 if let Some(&tile_idx) = sorted_tile_indices.get(i) {
                     let tile_metadata = self.diff_detector.get_all_metadata_mut();
                     if tile_idx < tile_metadata.len() {
-                        tile_metadata[tile_idx].cached_encoded = Some(encoded[i].clone());
+                        // Store as Arc for zero-copy sharing
+                        tile_metadata[tile_idx].cached_encoded = Some(Arc::from(encoded[i].as_slice()));
                         tile_metadata[tile_idx].cached_hash = merged_hash;
                     }
                 }
