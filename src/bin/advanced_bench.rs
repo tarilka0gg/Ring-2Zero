@@ -455,11 +455,11 @@ fn print_result(result: &BenchmarkResult) {
 }
 
 fn print_summary(results: &[BenchmarkResult], target_fps: u32) {
-    println!("\n╔══════════════════════════════════════════════════════════════════╗");
-    println!("║                       📈 SUMMARY TABLE                           ║");
-    println!("╠══════════════════════════════════════════════════════════════════╣");
-    println!("║ Scenario   │   FPS   │  Latency p95  │ Throughput  │ Cache Hit ║");
-    println!("╟────────────┼─────────┼───────────────┼─────────────┼───────────╢");
+    println!("\n╔═══════════════════════════════════════════════════════════════════╗");
+    println!("║                        📈 SUMMARY TABLE                           ║");
+    println!("╠═══════════════════════════════════════════════════════════════════╣");
+    println!("║ Scenario    │   FPS   │  Latency p95  │  Throughput  │ Cache Hit ║");
+    println!("╟─────────────┼─────────┼───────────────┼──────────────┼───────────╢");
 
     for result in results {
         let emoji = match result.scenario.as_str() {
@@ -476,9 +476,10 @@ fn print_summary(results: &[BenchmarkResult], target_fps: u32) {
             "⚠️ "
         };
 
-        println!("║ {} {:<8} │ {:>7} │ {:>13} │ {:>11} │ {:>9} ║ {}",
+        // Emoji takes 2 visual columns, so adjust padding
+        println!("║ {} {:<7} │ {:>7} │ {:>13} │ {:>12} │ {:>9} ║ {}",
             emoji,
-            &result.scenario[..result.scenario.len().min(8)],
+            &result.scenario[..result.scenario.len().min(7)],
             format!("{:.0}", result.performance.frames_per_sec),
             format!("{:.0} μs", result.performance.latency_p95),
             format!("{:.1} MB/s", result.performance.mb_per_sec),
@@ -487,10 +488,10 @@ fn print_summary(results: &[BenchmarkResult], target_fps: u32) {
         );
     }
 
-    println!("╟────────────┴─────────┴───────────────┴─────────────┴───────────╢");
-    println!("║ Target: {:.1} ms/frame ({} FPS)                                  ║",
+    println!("╟─────────────┴─────────┴───────────────┴──────────────┴───────────╢");
+    println!("║ Target: {:.1} ms/frame ({} FPS)                                   ║",
         1000.0 / target_fps as f64, target_fps);
-    println!("╚══════════════════════════════════════════════════════════════════╝");
+    println!("╚═══════════════════════════════════════════════════════════════════╝");
 }
 
 // ============================================================================
