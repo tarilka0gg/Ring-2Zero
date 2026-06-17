@@ -6,6 +6,7 @@ use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
 use std::time::Instant;
+use std::sync::Arc;
 
 fn generate_test_frame(width: u32, height: u32, frame_num: usize, change_pct: f32) -> Vec<u8> {
     let mut rgba = vec![100u8; (width * height * 4) as usize];
@@ -151,7 +152,7 @@ impl FrameProfiler {
 
         // 6. Cache Check - порівнюємо хеш merged tile з cached_hash
         let t5 = Instant::now();
-        let cached_data: Vec<Option<Vec<u8>>> = tile_hashes.iter()
+        let cached_data: Vec<Option<Arc<[u8]>>> = tile_hashes.iter()
             .enumerate()
             .map(|(i, &merged_hash)| {
                 // Перевіряємо всі тайли у metadata чи є хтось з таким хешем
@@ -196,10 +197,10 @@ impl FrameProfiler {
         let t7 = Instant::now();
         let mut encoded = vec![Vec::new(); sorted_tiles.len()];
 
-        // Fill cache hits
+        // Fill cache hits (Arc to_vec conversion)
         for (i, cached) in cached_data.iter().enumerate() {
             if let Some(data) = cached {
-                encoded[i] = data.clone();
+                encoded[i] = data.to_vec();
             }
         }
 
@@ -221,7 +222,7 @@ impl FrameProfiler {
                 if let Some(&tile_idx) = sorted_tile_indices.get(i) {
                     let tile_metadata = self.diff_detector.get_all_metadata_mut();
                     if tile_idx < tile_metadata.len() {
-                        tile_metadata[tile_idx].cached_encoded = Some(encoded[i].clone());
+                        tile_metadata[tile_idx].cached_encoded = Some(Arc::from(encoded[i].as_slice()));
                         tile_metadata[tile_idx].cached_hash = merged_hash;
                     }
                 }
