@@ -15,14 +15,14 @@ High-performance Wayland screen streaming server with WebRTC support.
 
 ## 📊 Performance
 
-Real-world benchmarks with tile merging (June 16, 2026, averaged over 10 runs):
+Real-world benchmarks with tile merging (June 17, 2026, v0.159, averaged over 10 runs):
 
 | Scenario | Time/Frame | FPS | vs Target (32 FPS) |
 |----------|-----------|-----|-------------------|
-| 🟢 Static content | 0.4 ms | **2487 FPS** | 77.7× faster |
-| 🟡 Moderate activity | 0.6 ms | **1800 FPS** | 56.3× faster |
-| 🟠 Active work | 1.5 ms | **656 FPS** | 20.5× faster |
-| 🔴 Video window | 0.8 ms | **1242 FPS** | 38.8× faster |
+| 🟢 Static content | 0.39 ms | **2555 FPS** | 79.8× faster |
+| 🟡 Moderate activity | 0.51 ms | **1979 FPS** | 61.8× faster |
+| 🟠 Active work | 1.28 ms | **779 FPS** | 24.3× faster |
+| 🔴 Video window | 0.69 ms | **1441 FPS** | 45.0× faster |
 
 **Key optimizations:**
 - **Tile merging**: 85-98% tile reduction (e.g., 724 → 13 tiles)
@@ -30,6 +30,7 @@ Real-world benchmarks with tile merging (June 16, 2026, averaged over 10 runs):
 - **Zero-copy hashing**: 54-99% tiles skipped, ~27-50% CPU savings
 - **Adaptive FPS**: Dynamic 60 FPS for changed content, 8 FPS for static
 - **Variance**: <4% across multiple runs (highly stable)
+- **Thread safety**: All data races fixed with snapshot pattern (+9% performance boost)
 
 ## 🔧 Building
 

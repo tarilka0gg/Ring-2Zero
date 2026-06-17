@@ -218,15 +218,13 @@ fn benchmark_scenario(config: &Config, scenario: &str, description: &str, frames
 }
 
 fn main() {
-    // Set benchmark mode to suppress debug output
-    std::env::set_var("BENCHMARK_MODE", "1");
-
     println!("\n╔══════════════════════════════════════════════════════════╗");
     println!("║    REALISTIC PERFORMANCE BENCHMARK (with tile merging)  ║");
     println!("║              Average of 10 runs per scenario            ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    let config = Config::default();
+    let mut config = Config::default();
+    config.debug_mode = false;  // Suppress debug output during benchmark
 
     let tile_width = 1920 / config.tiles_x;
     let tile_height = tile_width * 1080 / 1920;
@@ -265,21 +263,22 @@ fn main() {
         println!(" Done!\n");
 
         // Calculate averages
-        let avg_diff_ms = run_results.iter().map(|r| r.avg_diff_ms).sum::<f64>() / 10.0;
-        let avg_merge_ms = run_results.iter().map(|r| r.avg_merge_ms).sum::<f64>() / 10.0;
-        let avg_encode_ms = run_results.iter().map(|r| r.avg_encode_ms).sum::<f64>() / 10.0;
-        let avg_overhead_ms = run_results.iter().map(|r| r.avg_overhead_ms).sum::<f64>() / 10.0;
-        let avg_total_ms = run_results.iter().map(|r| r.avg_total_ms).sum::<f64>() / 10.0;
-        let avg_tiles_before = run_results.iter().map(|r| r.avg_tiles_before).sum::<f64>() / 10.0;
-        let avg_tiles_after = run_results.iter().map(|r| r.avg_tiles_after).sum::<f64>() / 10.0;
-        let avg_cache_hits = run_results.iter().map(|r| r.cache_hits).sum::<usize>() / 10;
-        let total_tiles = run_results.iter().map(|r| (r.avg_tiles_after * 100.0) as usize).sum::<usize>() / 10;
+        let n_runs = run_results.len();
+        let avg_diff_ms = run_results.iter().map(|r| r.avg_diff_ms).sum::<f64>() / n_runs as f64;
+        let avg_merge_ms = run_results.iter().map(|r| r.avg_merge_ms).sum::<f64>() / n_runs as f64;
+        let avg_encode_ms = run_results.iter().map(|r| r.avg_encode_ms).sum::<f64>() / n_runs as f64;
+        let avg_overhead_ms = run_results.iter().map(|r| r.avg_overhead_ms).sum::<f64>() / n_runs as f64;
+        let avg_total_ms = run_results.iter().map(|r| r.avg_total_ms).sum::<f64>() / n_runs as f64;
+        let avg_tiles_before = run_results.iter().map(|r| r.avg_tiles_before).sum::<f64>() / n_runs as f64;
+        let avg_tiles_after = run_results.iter().map(|r| r.avg_tiles_after).sum::<f64>() / n_runs as f64;
+        let avg_cache_hits = run_results.iter().map(|r| r.cache_hits).sum::<usize>() / n_runs;
+        let total_tiles = run_results.iter().map(|r| (r.avg_tiles_after * r.frames as f64) as usize).sum::<usize>() / n_runs;
         let avg_cache_hit_rate = if total_tiles > 0 {
             avg_cache_hits as f64 / total_tiles as f64
         } else {
             0.0
         };
-        let avg_fps = run_results.iter().map(|r| r.fps).sum::<f64>() / 10.0;
+        let avg_fps = run_results.iter().map(|r| r.fps).sum::<f64>() / n_runs as f64;
 
         // Print averaged results
         let reduction = if avg_tiles_before > 0.0 {
@@ -292,7 +291,7 @@ fn main() {
         println!("  Cache hits:       {} / {} tiles ({:.1}%)", avg_cache_hits, total_tiles, avg_cache_hit_rate * 100.0);
         println!("  Diff detection:   {:.2} ms", avg_diff_ms);
         println!("  Tile merging:     {:.2} ms", avg_merge_ms);
-        println!("  WebP encoding:    {:.2} ms ({} tiles encoded)", avg_encode_ms, (total_tiles - avg_cache_hits));
+        println!("  WebP encoding:    {:.2} ms ({} tiles encoded)", avg_encode_ms, total_tiles.saturating_sub(avg_cache_hits));
         println!("  Overhead:         {:.2} ms", avg_overhead_ms);
         println!("  ─────────────────────────────");
         println!("  TOTAL:            {:.2} ms  →  {:.0} FPS", avg_total_ms, avg_fps);

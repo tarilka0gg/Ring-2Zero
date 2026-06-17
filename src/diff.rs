@@ -91,11 +91,20 @@ impl DiffDetector {
             }
         }
 
-        // Snapshot для безпечного паралельного доступу
+        // Snapshots для безпечного паралельного доступу (fix data races)
         let prev_half_hashes: Vec<u64> = self.tile_metadata
             .iter()
             .map(|m| m.prev_half_hash)
             .collect();
+
+        // Snapshot всіх полів що читаються в parallel closure
+        let prev_hashes_snap = self.prev_hashes.clone();
+        let prev_prev_hashes_snap = self.prev_prev_hashes.clone();
+        let metadata_snap: Vec<(u64, bool)> = self.tile_metadata
+            .iter()
+            .map(|m| (m.last_sent_frame, m.last_sent_as_dynamic))
+            .collect();
+        let damaged_tiles_snap = self.damaged_tiles.clone();
 
         // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata
         let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, stats) = (0..total_tiles)
@@ -104,8 +113,8 @@ impl DiffDetector {
                 || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
                 |(mut hashes, mut tiles, mut indices, mut half_hashes, mut stats), i| {
                     // Якщо є damage tracking і тайл не в damaged_tiles - skip hashing
-                    if has_damage && !self.damaged_tiles.contains(&i) {
-                        hashes.push((i, self.prev_hashes[i]));
+                    if has_damage && !damaged_tiles_snap.contains(&i) {
+                        hashes.push((i, prev_hashes_snap[i]));
                         stats.1 += 1; // damage_skipped
                         return (hashes, tiles, indices, half_hashes, stats);
                     }
@@ -123,7 +132,7 @@ impl DiffDetector {
                     let full_hash = if !is_first_frame && half_hash == prev_half_hashes[i] {
                         // Half хеш не змінився → Zero-copy!
                         stats.0 += 1; // skipped_hashes
-                        self.prev_hashes[i]
+                        prev_hashes_snap[i]
                     } else {
                         // Half хеш змінився → повний хеш
                         hash_tile(frame_data, x, y, tw, th, width)
@@ -132,7 +141,7 @@ impl DiffDetector {
                     hashes.push((i, full_hash));
 
                     // Change detection
-                    let is_changed = is_first_frame || full_hash != self.prev_hashes[i];
+                    let is_changed = is_first_frame || full_hash != prev_hashes_snap[i];
 
                     if !is_changed {
                         return (hashes, tiles, indices, half_hashes, stats);
@@ -140,12 +149,12 @@ impl DiffDetector {
 
                     // Tile changed - check if we should send it
                     let is_dynamic = !is_first_frame
-                        && self.tile_metadata[i].last_sent_frame > 0
-                        && self.prev_prev_hashes[i] != self.prev_hashes[i]
-                        && self.prev_hashes[i] != full_hash;
+                        && metadata_snap[i].0 > 0
+                        && prev_prev_hashes_snap[i] != prev_hashes_snap[i]
+                        && prev_hashes_snap[i] != full_hash;
 
-                    let was_sent_as_dynamic = self.tile_metadata[i].last_sent_as_dynamic;
-                    let frames_since_last = self.frame_count - self.tile_metadata[i].last_sent_frame;
+                    let was_sent_as_dynamic = metadata_snap[i].1;
+                    let frames_since_last = self.frame_count - metadata_snap[i].0;
 
                     // Розраховуємо інтервал відправки
                     let interval = if is_dynamic {
@@ -250,9 +259,6 @@ impl DiffDetector {
 
             meta.last_hash_diff = self.prev_hashes[i] ^ new_hashes_array[i];
 
-            let changes = meta.change_history.count_ones();
-            meta.update_frequency = changes as f32 / meta.change_history.len().max(1) as f32;
-
             self.prev_prev_hashes[i] = self.prev_hashes[i];
             self.prev_hashes[i] = new_hashes_array[i];
         }
@@ -279,14 +285,11 @@ impl DiffDetector {
                 // Update change history
                 let meta = &mut self.tile_metadata[i];
                 meta.change_history.push(false);
-
-                let changes = meta.change_history.count_ones();
-                meta.update_frequency = changes as f32 / meta.change_history.len().max(1) as f32;
             }
         }
 
-        // Логуємо статистику адаптивного FPS (silent in benchmark mode)
-        if self.frame_count % 100 == 0 && std::env::var("BENCHMARK_MODE").is_err() {
+        // Логуємо статистику адаптивного FPS (тільки в debug режимі)
+        if self.frame_count % 100 == 0 && self.config.debug_mode {
             println!("[Frame {}] Changed tiles: {}", self.frame_count, changed_tiles.len());
             if skipped_by_fps > 0 {
                 println!("[Adaptive FPS] Skipped {} tiles due to FPS throttling", skipped_by_fps);
