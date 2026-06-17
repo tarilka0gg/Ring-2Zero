@@ -5,6 +5,7 @@ struct BenchmarkCache {
     cpu_model: String,
     ms_per_tile: f32,
     merge_gap: u32,
+    tiles_x: u32,
     timestamp: u64,
     binary_mtime: u64,
 }
@@ -137,6 +138,7 @@ impl Config {
         // Validate cache
         let current_cpu = Self::get_cpu_model();
         let current_mtime = Self::get_binary_mtime();
+        let current_tiles_x = Self::default().tiles_x;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -151,6 +153,12 @@ impl Config {
         // Check binary not recompiled
         if cache.binary_mtime != current_mtime {
             println!("  Cache invalid: Binary recompiled");
+            return None;
+        }
+
+        // Check tiles_x hasn't changed
+        if cache.tiles_x != current_tiles_x {
+            println!("  Cache invalid: tiles_x changed ({} → {})", cache.tiles_x, current_tiles_x);
             return None;
         }
 
@@ -171,6 +179,7 @@ impl Config {
             cpu_model: Self::get_cpu_model(),
             ms_per_tile,
             merge_gap,
+            tiles_x: Self::default().tiles_x,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -190,10 +199,16 @@ impl Config {
     fn benchmark_encoding_speed() -> f32 {
         use std::time::Instant;
 
+        // Use actual runtime tile dimensions based on Config::default().tiles_x
+        // This ensures benchmark matches production tile sizes
+        let config = Config::default();
+        let width = 1920u32;  // Standard 1080p width
+        let height = 1080u32;
+        let tile_width = width / config.tiles_x;
+        let tile_height = tile_width * height / width;
+
         println!("  Creating test data...");
-        // Create typical tile (48x48 RGBA)
-        let tile_width = 48u32;
-        let tile_height = 48u32;
+        println!("  Tile dimensions: {}×{}px (based on tiles_x={})", tile_width, tile_height, config.tiles_x);
         let test_data = vec![128u8; (tile_width * tile_height * 4) as usize];
 
         println!("  Warm-up (2 iterations)...");
