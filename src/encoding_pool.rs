@@ -3,6 +3,7 @@
 
 use std::thread;
 use std::sync::Arc;
+use std::time::Duration;
 use crossbeam::channel::{bounded, Sender, Receiver};
 use crate::tile::Tile;
 use crate::tile_buffer_pool::TileBufferPool;
@@ -70,9 +71,16 @@ impl EncodingPool {
 
     pub fn collect_results(&self, count: usize) -> Vec<EncodedResult> {
         let mut results = Vec::with_capacity(count);
+        let timeout = Duration::from_secs(5);
+
         for _ in 0..count {
-            if let Ok(result) = self.result_rx.recv() {
-                results.push(result);
+            match self.result_rx.recv_timeout(timeout) {
+                Ok(result) => results.push(result),
+                Err(_) => {
+                    // Timeout or disconnect - worker likely panicked
+                    eprintln!("Warning: encoding_pool.collect_results() timeout after {} results (expected {})", results.len(), count);
+                    break;
+                }
             }
         }
         results

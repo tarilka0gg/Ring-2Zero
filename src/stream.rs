@@ -180,7 +180,7 @@ impl StreamServer {
                 // Submit encoding tasks to pool
                 for (i, tile) in sorted_tiles.iter().enumerate() {
                     let tile_idx = sorted_tile_indices[i];
-                    let tile_hash = tile_hashes[i];
+                    let _tile_hash = tile_hashes[i];
 
                     // Check cache first (using pre-cloned data)
                     if let Some(ref cached) = cached_data[i] {
@@ -257,16 +257,24 @@ impl StreamServer {
                         tile_buffer.clear();
                         tile_buffer.resize(tile_size, 0);
 
-                        if tile.width == width {
+                        // Bounds check: clamp tile dimensions to frame boundaries
+                        let max_height = height.saturating_sub(tile.y).min(tile.height);
+                        let max_width = width.saturating_sub(tile.x).min(tile.width);
+
+                        if tile.width == width && max_height == tile.height {
                             let src_offset = (tile.y * width * 4) as usize;
                             tile_buffer.copy_from_slice(&frame.rgba[src_offset..src_offset + tile_size]);
                         } else {
-                            for row in 0..tile.height {
+                            for row in 0..max_height {
                                 let src_offset = (((tile.y + row) * width + tile.x) * 4) as usize;
                                 let dst_offset = (row * tile.width * 4) as usize;
-                                let len = (tile.width * 4) as usize;
-                                tile_buffer[dst_offset..dst_offset + len]
-                                    .copy_from_slice(&frame.rgba[src_offset..src_offset + len]);
+                                let len = (max_width * 4) as usize;
+
+                                // Extra safety check
+                                if src_offset + len <= frame.rgba.len() {
+                                    tile_buffer[dst_offset..dst_offset + len]
+                                        .copy_from_slice(&frame.rgba[src_offset..src_offset + len]);
+                                }
                             }
                         }
 
