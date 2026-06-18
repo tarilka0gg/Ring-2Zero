@@ -39,16 +39,22 @@ impl EncodingPool {
                 thread::spawn(move || {
                     // Worker loop
                     while let Ok(task) = task_rx.recv() {
-                        let encoded = webp::Encoder::from_rgba(
+                        let encoded = fast_webp::encode_rgba(
                             &task.tile_data,
                             task.tile.width,
                             task.tile.height,
-                        )
-                        .encode(task.tile.quality);
+                            fast_webp::WebpOptions {
+                                quality: task.tile.quality,
+                                ..Default::default()
+                            },
+                        ).unwrap_or_else(|e| {
+                            eprintln!("WebP encoding error: {:?}", e);
+                            Vec::new()
+                        });
 
                         let _ = result_tx.send(EncodedResult {
                             tile_idx: task.tile_idx,
-                            data: encoded.to_vec(),
+                            data: encoded,
                         });
 
                         // Return buffer to pool immediately after encoding

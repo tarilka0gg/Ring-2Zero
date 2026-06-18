@@ -163,9 +163,18 @@ impl TileEncoder {
                         frame_width,
                     );
 
-                    webp::Encoder::from_rgba(&buf, tile.width, tile.height)
-                        .encode(tile.quality)
-                        .to_vec()
+                    fast_webp::encode_rgba(
+                        &buf,
+                        tile.width,
+                        tile.height,
+                        fast_webp::WebpOptions {
+                            quality: tile.quality,
+                            ..Default::default()
+                        },
+                    ).unwrap_or_else(|e| {
+                        eprintln!("WebP encoding error: {:?}", e);
+                        Vec::new()
+                    })
                 })
             })
             .collect()
@@ -196,9 +205,18 @@ impl TileEncoder {
                         frame_width,
                     );
 
-                    webp::Encoder::from_rgba(&buf, tile.width, tile.height)
-                        .encode(tile.quality)
-                        .to_vec()
+                    fast_webp::encode_rgba(
+                        &buf,
+                        tile.width,
+                        tile.height,
+                        fast_webp::WebpOptions {
+                            quality: tile.quality,
+                            ..Default::default()
+                        },
+                    ).unwrap_or_else(|e| {
+                        eprintln!("WebP encoding error: {:?}", e);
+                        Vec::new()
+                    })
                 })
             })
             .collect()

@@ -207,9 +207,18 @@ impl FrameProfiler {
 
         // Encode non-cached tiles
         for (i, tile, tile_buffer) in tile_buffers {
-            let webp_data = webp::Encoder::from_rgba(&tile_buffer, tile.width, tile.height)
-                .encode(tile.quality)
-                .to_vec();
+            let webp_data = fast_webp::encode_rgba(
+                &tile_buffer,
+                tile.width,
+                tile.height,
+                fast_webp::WebpOptions {
+                    quality: tile.quality,
+                    ..Default::default()
+                },
+            ).unwrap_or_else(|e| {
+                eprintln!("WebP encoding error: {:?}", e);
+                Vec::new()
+            });
             encoded[i] = webp_data;
             timing.tiles_encoded += 1;
         }
