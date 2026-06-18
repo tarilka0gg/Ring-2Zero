@@ -269,9 +269,18 @@ impl StreamServer {
                             width,
                         );
 
-                        webp::Encoder::from_rgba(&tile_buffer, tile.width, tile.height)
-                            .encode(tile.quality)
-                            .to_vec()
+                        fast_webp::encode_rgba(
+                            &tile_buffer,
+                            tile.width,
+                            tile.height,
+                            fast_webp::WebpOptions {
+                                quality: tile.quality,
+                                ..Default::default()
+                            },
+                        ).unwrap_or_else(|e| {
+                            eprintln!("WebP encoding error: {:?}", e);
+                            Vec::new()
+                        })
                     });
 
                     encoded[i] = fallback_encoded;

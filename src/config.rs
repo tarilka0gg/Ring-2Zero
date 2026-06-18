@@ -224,8 +224,15 @@ impl Config {
         // Warm-up (fill CPU cache)
         for i in 0..2 {
             println!("    Warm-up iteration {}", i + 1);
-            let encoder = webp::Encoder::from_rgba(&test_data, tile_width, tile_height);
-            let _result = encoder.encode(10.0);
+            let _result = fast_webp::encode_rgba(
+                &test_data,
+                tile_width,
+                tile_height,
+                fast_webp::WebpOptions {
+                    quality: 10.0,
+                    ..Default::default()
+                },
+            );
             println!("    Done");
         }
 
@@ -234,8 +241,15 @@ impl Config {
         let start = Instant::now();
         for i in 0..10 {
             println!("    Benchmark iteration {}", i + 1);
-            let encoder = webp::Encoder::from_rgba(&test_data, tile_width, tile_height);
-            let _result = encoder.encode(10.0);
+            let _result = fast_webp::encode_rgba(
+                &test_data,
+                tile_width,
+                tile_height,
+                fast_webp::WebpOptions {
+                    quality: 10.0,
+                    ..Default::default()
+                },
+            );
         }
         let elapsed = start.elapsed().as_secs_f32() * 1000.0;  // Convert to ms
 
