@@ -56,7 +56,7 @@ struct BenchResult {
     error: Option<String>,
 }
 
-fn bench_webp_original(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResult {
+fn bench_fast_webp_current(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResult {
     let start = Instant::now();
     let result = fast_webp::encode_rgba(
         data,
@@ -154,48 +154,6 @@ fn bench_webpx(_data: &[u8], _width: u32, _height: u32, _quality: f32) -> BenchR
     }
 }
 
-#[cfg(feature = "webp_bench")]
-fn bench_fast_webp(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResult {
-    use fast_webp::{encode_rgba, WebpOptions};
-
-    let start = Instant::now();
-
-    let options = WebpOptions {
-        quality: quality,
-        ..Default::default()
-    };
-
-    let result = encode_rgba(data, width, height, options);
-    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-
-    match result {
-        Ok(encoded) => BenchResult {
-            name: "fast-webp 0.1.1".to_string(),
-            encode_time_ms: elapsed,
-            output_size: encoded.len(),
-            success: true,
-            error: None,
-        },
-        Err(e) => BenchResult {
-            name: "fast-webp 0.1.1".to_string(),
-            encode_time_ms: elapsed,
-            output_size: 0,
-            success: false,
-            error: Some(format!("{:?}", e)),
-        }
-    }
-}
-
-#[cfg(not(feature = "webp_bench"))]
-fn bench_fast_webp(_data: &[u8], _width: u32, _height: u32, _quality: f32) -> BenchResult {
-    BenchResult {
-        name: "fast-webp 0.1.1".to_string(),
-        encode_time_ms: 0.0,
-        output_size: 0,
-        success: false,
-        error: Some("Not compiled with webp_bench feature".to_string()),
-    }
-}
 
 #[cfg(feature = "webp_bench")]
 fn bench_webp_rust(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResult {
@@ -313,7 +271,7 @@ fn main() {
         let _ = fast_webp::encode_rgba(&data, width, height, fast_webp::WebpOptions::default());
 
         // Benchmark all implementations
-        results.push(bench_webp_original(&data, width, height, quality));
+        results.push(bench_fast_webp_current(&data, width, height, quality));
         results.push(bench_webp_old(&data, width, height, quality));
         results.push(bench_webpx(&data, width, height, quality));
         results.push(bench_webp_rust(&data, width, height, quality));
