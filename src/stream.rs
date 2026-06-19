@@ -161,21 +161,7 @@ impl StreamServer {
                     .map(|&idx| diff_detector.get_current_hashes()[idx])
                     .collect();
 
-                // Clone cache data before parallel work to avoid borrowing issues
-                let mut cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
-                    .enumerate()
-                    .map(|(i, &idx)| {
-                        let metadata = diff_detector.get_metadata(idx);
-                        if metadata.cached_hash == tile_hashes[i] {
-                            // Cache hit - clone Vec once
-                            metadata.cached_encoded.clone()
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Pre-fill encoded vec with cache hits and track submissions
+                // Pre-fill encoded vec and track submissions
                 let mut encoded = vec![Vec::new(); sorted_tiles.len()];
                 let mut submitted_count = 0;
 
@@ -184,11 +170,14 @@ impl StreamServer {
                     let tile_idx = sorted_tile_indices[i];
                     let _tile_hash = tile_hashes[i];
 
-                    // Check cache first - take() moves data without additional clone
-                    if let Some(cached) = cached_data[i].take() {
-                        // Cache hit - move data directly (no second clone)
-                        encoded[i] = cached;
-                        continue;
+                    // Check cache first - take directly without pre-cloning
+                    let metadata = diff_detector.get_metadata(tile_idx);
+                    if metadata.cached_hash == tile_hashes[i] {
+                        if let Some(ref cached) = metadata.cached_encoded {
+                            // Cache hit - clone once directly into encoded
+                            encoded[i] = cached.clone();
+                            continue;
+                        }
                     }
 
                     // Get buffer from pool (reusable)
@@ -226,10 +215,16 @@ impl StreamServer {
                 // Collect only submitted tasks (not cache hits)
                 let encoded_results = encoding_pool.collect_results(submitted_count);
 
-                // Fill in non-cached results
+                // Build index map for O(1) lookup instead of O(n²) position()
+                let tile_idx_to_pos: std::collections::HashMap<usize, usize> = sorted_tile_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(pos, &idx)| (idx, pos))
+                    .collect();
+
+                // Fill in non-cached results with O(1) lookup
                 for result in encoded_results {
-                    // Find position in sorted_tile_indices (correct after sorting)
-                    if let Some(pos) = sorted_tile_indices.iter().position(|&idx| idx == result.tile_idx) {
+                    if let Some(&pos) = tile_idx_to_pos.get(&result.tile_idx) {
                         encoded[pos] = result.data;
                     } else {
                         eprintln!("⚠️  WARNING: Received result for unknown tile_idx={}", result.tile_idx);
@@ -256,6 +251,14 @@ impl StreamServer {
                         // Bounds check: clamp tile dimensions to frame boundaries
                         let max_height = height.saturating_sub(tile.y).min(tile.height);
                         let max_width = width.saturating_sub(tile.x).min(tile.width);
+
+                        // Skip zero-dimension tiles (out of bounds)
+                        if max_width == 0 || max_height == 0 {
+                            eprintln!("⚠️  Skipping out-of-bounds tile ({}, {}): {}×{} doesn't fit in {}×{}",
+                                      tile.x, tile.y, tile.width, tile.height, width, height);
+                            return Vec::new();
+                        }
+
                         let tile_size = (max_width * max_height * 4) as usize;
 
                         tile_buffer.clear();
