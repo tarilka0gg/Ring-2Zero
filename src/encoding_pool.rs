@@ -48,8 +48,23 @@ impl EncodingPool {
                                 ..Default::default()
                             },
                         ).unwrap_or_else(|e| {
-                            eprintln!("WebP encoding error: {:?}", e);
-                            Vec::new()
+                            eprintln!("⚠️  WebP encoding error at tile ({}, {}), {}×{}: {:?}",
+                                      task.tile.x, task.tile.y, task.tile.width, task.tile.height, e);
+                            eprintln!("    Attempting fallback encoding with quality 50...");
+
+                            // Fallback: try with lower quality
+                            fast_webp::encode_rgba(
+                                &task.tile_data,
+                                task.tile.width,
+                                task.tile.height,
+                                fast_webp::WebpOptions {
+                                    quality: 50.0,
+                                    ..Default::default()
+                                },
+                            ).unwrap_or_else(|e2| {
+                                eprintln!("❌ CRITICAL: Worker fallback encoding failed: {:?}", e2);
+                                Vec::new()
+                            })
                         });
 
                         let _ = result_tx.send(EncodedResult {
