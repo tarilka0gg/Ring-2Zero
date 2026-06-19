@@ -1,6 +1,6 @@
 [package]
 name = "ring-2zero"
-version = "0.202.0"
+version = "0.204.0"
 edition = "2021"
 
 [lib]

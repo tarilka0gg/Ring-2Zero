@@ -3,11 +3,10 @@ use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use crate::frame::Frame;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 pub struct DiffDetector {
-    prev_hashes: Arc<Vec<u64>>,
-    prev_prev_hashes: Arc<Vec<u64>>,
+    prev_hashes: Vec<u64>,
+    prev_prev_hashes: Vec<u64>,
     tile_metadata: Vec<TileMetadata>,
     damaged_tiles: HashSet<usize>,
     config: Config,
@@ -19,8 +18,8 @@ pub struct DiffDetector {
 impl DiffDetector {
     pub fn new(config: Config) -> Self {
         Self {
-            prev_hashes: Arc::new(Vec::new()),
-            prev_prev_hashes: Arc::new(Vec::new()),
+            prev_hashes: Vec::new(),
+            prev_prev_hashes: Vec::new(),
             tile_metadata: Vec::new(),
             damaged_tiles: HashSet::new(),
             config,
@@ -43,8 +42,8 @@ impl DiffDetector {
         let is_first_frame = self.prev_hashes.is_empty();
 
         if is_first_frame {
-            self.prev_hashes = Arc::new(vec![0; total_tiles]);
-            self.prev_prev_hashes = Arc::new(vec![0; total_tiles]);
+            self.prev_hashes = vec![0; total_tiles];
+            self.prev_prev_hashes = vec![0; total_tiles];
             self.tile_metadata.resize(total_tiles, TileMetadata::default());
         }
 
@@ -97,8 +96,8 @@ impl DiffDetector {
             .collect();
 
         // Snapshot всіх полів що читаються в parallel closure
-        let prev_hashes_snap = Arc::clone(&self.prev_hashes);
-        let prev_prev_hashes_snap = Arc::clone(&self.prev_prev_hashes);
+        let prev_hashes_snap = self.prev_hashes.clone();
+        let prev_prev_hashes_snap = self.prev_prev_hashes.clone();
         let metadata_snap: Vec<(u64, bool)> = self.tile_metadata
             .iter()
             .map(|m| (m.last_sent_frame, m.last_sent_as_dynamic))
@@ -241,16 +240,12 @@ impl DiffDetector {
         // Sequential metadata update (necessary for VecDeque which is not thread-safe)
         // Reuse computed hashes from parallel phase
 
-        // Clone Arc contents to mutable Vec for updates
-        let mut new_prev_hashes = (*self.prev_hashes).clone();
-        let mut new_prev_prev_hashes = (*self.prev_prev_hashes).clone();
-
         for (i, half_hash) in tile_hashes_vec {
 
             let is_dynamic = !is_first_frame
                 && self.tile_metadata[i].last_sent_frame > 0
-                && new_prev_prev_hashes[i] != new_prev_hashes[i]
-                && new_prev_hashes[i] != new_hashes_array[i];
+                && self.prev_prev_hashes[i] != self.prev_hashes[i]
+                && self.prev_hashes[i] != new_hashes_array[i];
 
             let meta = &mut self.tile_metadata[i];
             meta.prev_half_hash = half_hash;
@@ -261,20 +256,18 @@ impl DiffDetector {
 
             meta.change_history.push(true);
 
-            meta.last_hash_diff = new_prev_hashes[i] ^ new_hashes_array[i];
+            meta.last_hash_diff = self.prev_hashes[i] ^ new_hashes_array[i];
 
-            new_prev_prev_hashes[i] = new_prev_hashes[i];
-            new_prev_hashes[i] = new_hashes_array[i];
+            self.prev_prev_hashes[i] = self.prev_hashes[i];
+            self.prev_hashes[i] = new_hashes_array[i];
         }
 
-        // Wrap updated vectors back in Arc
-        self.prev_hashes = Arc::new(new_prev_hashes);
-        self.prev_prev_hashes = Arc::new(new_prev_prev_hashes);
-
         // SIMD Batch Operation: Increment unchanged_frames for all unchanged tiles
-        // Variant A: Combine index + counter in single Vec to reduce allocations
+        // Use HashSet for O(1) lookup instead of Vec.contains() O(n)
+        let changed_set: HashSet<usize> = tile_indices.iter().copied().collect();
+
         let mut unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
-            .filter(|i| !tile_indices.contains(i))
+            .filter(|i| !changed_set.contains(i))
             .map(|i| (i, self.tile_metadata[i].unchanged_frames))
             .collect();
 
@@ -334,8 +327,8 @@ impl DiffDetector {
     }
 
     pub fn reset(&mut self) {
-        self.prev_hashes = Arc::new(Vec::new());
-        self.prev_prev_hashes = Arc::new(Vec::new());
+        self.prev_hashes = Vec::new();
+        self.prev_prev_hashes = Vec::new();
         self.tile_metadata.clear();
         self.damaged_tiles.clear();
         self.frame_count = 0;

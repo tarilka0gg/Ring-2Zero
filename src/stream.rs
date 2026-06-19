@@ -162,12 +162,13 @@ impl StreamServer {
                     .collect();
 
                 // Clone cache data before parallel work to avoid borrowing issues
-                let cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
-                    .map(|&idx| {
+                let mut cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
+                    .enumerate()
+                    .map(|(i, &idx)| {
                         let metadata = diff_detector.get_metadata(idx);
-                        if metadata.cached_hash == tile_hashes[tile_hashes.iter().position(|_| true).unwrap_or(0)] {
-                            // Convert Arc to Vec for sending
-                            metadata.cached_encoded.as_ref().map(|arc| arc.to_vec())
+                        if metadata.cached_hash == tile_hashes[i] {
+                            // Cache hit - clone Vec once
+                            metadata.cached_encoded.clone()
                         } else {
                             None
                         }
@@ -183,10 +184,10 @@ impl StreamServer {
                     let tile_idx = sorted_tile_indices[i];
                     let _tile_hash = tile_hashes[i];
 
-                    // Check cache first (using pre-cloned data)
-                    if let Some(ref cached) = cached_data[i] {
-                        // Cache hit - use cached data directly (already converted to Vec)
-                        encoded[i] = cached.clone();
+                    // Check cache first - take() moves data without additional clone
+                    if let Some(cached) = cached_data[i].take() {
+                        // Cache hit - move data directly (no second clone)
+                        encoded[i] = cached;
                         continue;
                     }
 
@@ -251,14 +252,16 @@ impl StreamServer {
                     let tile = &sorted_tiles[i];
                     let fallback_encoded = TILE_BUFFER.with(|buf| {
                         let mut tile_buffer = buf.borrow_mut();
-                        let tile_size = (tile.width * tile.height * 4) as usize;
+
+                        // Bounds check: clamp tile dimensions to frame boundaries
+                        let max_height = height.saturating_sub(tile.y).min(tile.height);
+                        let max_width = width.saturating_sub(tile.x).min(tile.width);
+                        let tile_size = (max_width * max_height * 4) as usize;
+
                         tile_buffer.clear();
                         tile_buffer.resize(tile_size, 0);
 
                         // Extract tile data with SIMD optimization (with bounds checking)
-                        let max_height = height.saturating_sub(tile.y).min(tile.height);
-                        let max_width = width.saturating_sub(tile.x).min(tile.width);
-
                         crate::tile_extract::extract_tile(
                             &frame.rgba,
                             &mut tile_buffer,
@@ -269,17 +272,33 @@ impl StreamServer {
                             width,
                         );
 
+                        // Encode with actual extracted dimensions, not original tile dimensions
                         fast_webp::encode_rgba(
                             &tile_buffer,
-                            tile.width,
-                            tile.height,
+                            max_width,
+                            max_height,
                             fast_webp::WebpOptions {
                                 quality: tile.quality,
                                 ..Default::default()
                             },
                         ).unwrap_or_else(|e| {
-                            eprintln!("WebP encoding error: {:?}", e);
-                            Vec::new()
+                            eprintln!("⚠️  WebP fallback encoding error at tile ({}, {}), {}×{}: {:?}",
+                                      tile.x, tile.y, max_width, max_height, e);
+                            eprintln!("    Attempting second fallback with quality 50...");
+
+                            // Second fallback: try with lower quality
+                            fast_webp::encode_rgba(
+                                &tile_buffer,
+                                max_width,
+                                max_height,
+                                fast_webp::WebpOptions {
+                                    quality: 50.0,
+                                    ..Default::default()
+                                },
+                            ).unwrap_or_else(|e2| {
+                                eprintln!("❌ CRITICAL: All fallback attempts failed: {:?}", e2);
+                                Vec::new()
+                            })
                         })
                     });
 
@@ -291,8 +310,8 @@ impl StreamServer {
                 for (i, &tile_idx) in sorted_tile_indices.iter().enumerate() {
                     let metadata = &mut tile_metadata[tile_idx];
                     if !encoded[i].is_empty() {
-                        // Store as Arc for zero-copy sharing on future cache hits
-                        metadata.cached_encoded = Some(Arc::from(encoded[i].as_slice()));
+                        // Store encoded tile in cache
+                        metadata.cached_encoded = Some(encoded[i].clone());
                         metadata.cached_hash = tile_hashes[i];
                     }
                 }

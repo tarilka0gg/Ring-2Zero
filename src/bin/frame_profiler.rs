@@ -159,8 +159,8 @@ impl FrameProfiler {
                 for metadata in self.diff_detector.get_all_metadata() {
                     if metadata.cached_hash == merged_hash && metadata.cached_encoded.is_some() {
                         timing.cache_hits += 1;
-                        // Convert Arc to Vec for use
-                        return metadata.cached_encoded.as_ref().map(|arc| arc.to_vec());
+                        // Cache hit - clone Vec
+                        return metadata.cached_encoded.clone();
                     }
                 }
                 None
@@ -232,8 +232,8 @@ impl FrameProfiler {
                 if let Some(&tile_idx) = sorted_tile_indices.get(i) {
                     let tile_metadata = self.diff_detector.get_all_metadata_mut();
                     if tile_idx < tile_metadata.len() {
-                        // Store as Arc for zero-copy sharing
-                        tile_metadata[tile_idx].cached_encoded = Some(Arc::from(encoded[i].as_slice()));
+                        // Store encoded tile in cache
+                        tile_metadata[tile_idx].cached_encoded = Some(encoded[i].clone());
                         tile_metadata[tile_idx].cached_hash = merged_hash;
                     }
                 }
