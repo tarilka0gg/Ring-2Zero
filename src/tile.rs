@@ -400,8 +400,8 @@ pub struct TileMetadata {
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 
-    // Optimization #5: Cache encoded tile data with Arc for zero-copy sharing
-    pub cached_encoded: Option<Arc<[u8]>>,
+    // Optimization #3: Cache encoded tile data
+    pub cached_encoded: Option<Vec<u8>>,
     pub cached_hash: u64,
 }
 

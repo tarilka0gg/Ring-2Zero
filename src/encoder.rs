@@ -141,8 +141,8 @@ impl TileEncoder {
                 // Перевіряємо кеш
                 if let Some(cached) = &metadata.cached_encoded {
                     if metadata.cached_hash == tile_hash {
-                        // Cache hit! Convert Arc to Vec for return
-                        return cached.to_vec();
+                        // Cache hit! Return cloned Vec
+                        return cached.clone();
                     }
                 }
 
@@ -172,8 +172,24 @@ impl TileEncoder {
                             ..Default::default()
                         },
                     ).unwrap_or_else(|e| {
-                        eprintln!("WebP encoding error: {:?}", e);
-                        Vec::new()
+                        eprintln!("⚠️  WebP encoding error at tile ({}, {}), {}×{}: {:?}",
+                                  tile.x, tile.y, tile.width, tile.height, e);
+                        eprintln!("    Attempting fallback encoding with quality 50...");
+
+                        // Fallback: try with lower quality
+                        fast_webp::encode_rgba(
+                            &buf,
+                            tile.width,
+                            tile.height,
+                            fast_webp::WebpOptions {
+                                quality: 50.0,
+                                ..Default::default()
+                            },
+                        ).unwrap_or_else(|e2| {
+                            eprintln!("❌ CRITICAL: Fallback encoding also failed: {:?}", e2);
+                            eprintln!("    Returning empty tile - client will see corruption!");
+                            Vec::new()
+                        })
                     })
                 })
             })
@@ -214,8 +230,24 @@ impl TileEncoder {
                             ..Default::default()
                         },
                     ).unwrap_or_else(|e| {
-                        eprintln!("WebP encoding error: {:?}", e);
-                        Vec::new()
+                        eprintln!("⚠️  WebP encoding error at tile ({}, {}), {}×{}: {:?}",
+                                  tile.x, tile.y, tile.width, tile.height, e);
+                        eprintln!("    Attempting fallback encoding with quality 50...");
+
+                        // Fallback: try with lower quality
+                        fast_webp::encode_rgba(
+                            &buf,
+                            tile.width,
+                            tile.height,
+                            fast_webp::WebpOptions {
+                                quality: 50.0,
+                                ..Default::default()
+                            },
+                        ).unwrap_or_else(|e2| {
+                            eprintln!("❌ CRITICAL: Fallback encoding also failed: {:?}", e2);
+                            eprintln!("    Returning empty tile - client will see corruption!");
+                            Vec::new()
+                        })
                     })
                 })
             })

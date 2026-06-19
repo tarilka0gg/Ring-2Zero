@@ -241,16 +241,16 @@ impl DiffDetector {
         // Sequential metadata update (necessary for VecDeque which is not thread-safe)
         // Reuse computed hashes from parallel phase
 
-        // Clone Arc contents to mutable Vec for updates
-        let mut new_prev_hashes = (*self.prev_hashes).clone();
-        let mut new_prev_prev_hashes = (*self.prev_prev_hashes).clone();
+        // Use Arc::make_mut for copy-on-write: only clones if refcount > 1
+        let prev_hashes_mut = Arc::make_mut(&mut self.prev_hashes);
+        let prev_prev_hashes_mut = Arc::make_mut(&mut self.prev_prev_hashes);
 
         for (i, half_hash) in tile_hashes_vec {
 
             let is_dynamic = !is_first_frame
                 && self.tile_metadata[i].last_sent_frame > 0
-                && new_prev_prev_hashes[i] != new_prev_hashes[i]
-                && new_prev_hashes[i] != new_hashes_array[i];
+                && prev_prev_hashes_mut[i] != prev_hashes_mut[i]
+                && prev_hashes_mut[i] != new_hashes_array[i];
 
             let meta = &mut self.tile_metadata[i];
             meta.prev_half_hash = half_hash;
@@ -261,15 +261,11 @@ impl DiffDetector {
 
             meta.change_history.push(true);
 
-            meta.last_hash_diff = new_prev_hashes[i] ^ new_hashes_array[i];
+            meta.last_hash_diff = prev_hashes_mut[i] ^ new_hashes_array[i];
 
-            new_prev_prev_hashes[i] = new_prev_hashes[i];
-            new_prev_hashes[i] = new_hashes_array[i];
+            prev_prev_hashes_mut[i] = prev_hashes_mut[i];
+            prev_hashes_mut[i] = new_hashes_array[i];
         }
-
-        // Wrap updated vectors back in Arc
-        self.prev_hashes = Arc::new(new_prev_hashes);
-        self.prev_prev_hashes = Arc::new(new_prev_prev_hashes);
 
         // SIMD Batch Operation: Increment unchanged_frames for all unchanged tiles
         // Variant A: Combine index + counter in single Vec to reduce allocations
