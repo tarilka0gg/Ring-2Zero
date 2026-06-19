@@ -162,12 +162,12 @@ impl StreamServer {
                     .collect();
 
                 // Clone cache data before parallel work to avoid borrowing issues
-                let cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
+                let mut cached_data: Vec<Option<Vec<u8>>> = sorted_tile_indices.iter()
                     .enumerate()
                     .map(|(i, &idx)| {
                         let metadata = diff_detector.get_metadata(idx);
                         if metadata.cached_hash == tile_hashes[i] {
-                            // Cache hit - clone Vec
+                            // Cache hit - clone Vec once
                             metadata.cached_encoded.clone()
                         } else {
                             None
@@ -184,10 +184,10 @@ impl StreamServer {
                     let tile_idx = sorted_tile_indices[i];
                     let _tile_hash = tile_hashes[i];
 
-                    // Check cache first (using pre-cloned data)
-                    if let Some(ref cached) = cached_data[i] {
-                        // Cache hit - use cached data directly (already converted to Vec)
-                        encoded[i] = cached.clone();
+                    // Check cache first - take() moves data without additional clone
+                    if let Some(cached) = cached_data[i].take() {
+                        // Cache hit - move data directly (no second clone)
+                        encoded[i] = cached;
                         continue;
                     }
 
