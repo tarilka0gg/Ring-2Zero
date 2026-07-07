@@ -19,30 +19,37 @@ path = "src/main.rs"
 [[bin]]
 name = "webp_codec_bench"
 path = "src/bin/webp_codec_bench.rs"
+required-features = ["webp_bench"]
 
 [[bin]]
 name = "detailed_bench"
 path = "src/bin/detailed_bench.rs"
+required-features = ["bench_tools"]
 
 [[bin]]
 name = "frame_profiler"
 path = "src/bin/frame_profiler.rs"
+required-features = ["bench_tools"]
 
 [[bin]]
 name = "diff_profiler"
 path = "src/bin/diff_profiler.rs"
+required-features = ["bench_tools"]
 
 [[bin]]
 name = "hash_analyzer"
 path = "src/bin/hash_analyzer.rs"
+required-features = ["bench_tools"]
 
 [[bin]]
 name = "modern_hash_bench"
 path = "src/bin/modern_hash_bench.rs"
+required-features = ["bench_tools"]
 
 [[bin]]
 name = "advanced_bench"
 path = "src/bin/advanced_bench.rs"
+required-features = ["bench_tools"]
 
 [dependencies]
 wayland-client = "0.31"
@@ -69,6 +76,7 @@ webp-rust = { version = "0.2.1", optional = true }
 
 [features]
 quality_metrics = []
+bench_tools = []
 webp_bench = ["webp", "webpx", "webp-rust"]
 pipewire_capture = []
 

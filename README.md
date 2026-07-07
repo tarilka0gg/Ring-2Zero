@@ -2,20 +2,22 @@
 
 High-performance Wayland screen streaming server with WebRTC support.
 
-## 🚀 Features
+## Features
 
-- **Wayland wlr-screencopy protocol** for efficient screen capture
-- **Tile-based encoding** with intelligent change detection
-- **Fast WebP compression** (fast-webp 0.1.1) with adaptive quality
-- **WebRTC DataChannel** streaming
-- **Tile merging** optimization (97-99% reduction in typical scenarios)
-- **Zero-copy hashing** with SIMD (AVX2/SSE2)
-- **Parallel encoding** pool with worker threads
-- **Persistent CPU benchmark cache**
+- **DMA-BUF zero-copy capture** via wlr-screencopy v3 + GBM LINEAR (niri, sway, wlroots)
+- **PipeWire screencast** via xdg-desktop-portal (GNOME, KDE, X11)
+- **Auto-detection** of the best available capture backend
+- **Tile-based diff encoding** with intelligent change detection
+- **Fast WebP compression** with adaptive quality
+- **WebRTC DataChannel** streaming to browser clients
+- **ACK feedback system** — client confirms received frames, server invalidates lost tiles
+- **Auto-reconnect** — WebSocket stays alive across WebRTC re-negotiations
+- **SIMD optimizations** — AVX2/SSE2 for hashing, tile extraction, BGRX→RGBA conversion
+- **Parallel encoding pool** with worker threads
 
-## 📊 Performance
+## Performance
 
-Real-world benchmarks with fast-webp encoding (June 19, 2026, v0.202, simulated with measured timings):
+Benchmarks with fast-webp encoding (v0.277, July 2026, i7-14650HX):
 
 | Scenario | Time/Frame | FPS | Pipeline Breakdown |
 |----------|-----------|-----|--------------------|
@@ -24,129 +26,95 @@ Real-world benchmarks with fast-webp encoding (June 19, 2026, v0.202, simulated 
 | 🟠 Active work | 0.63 ms | **1589 FPS** | 39% diff, 3% merge, 58% encode |
 | 🔴 Video window | 0.52 ms | **1935 FPS** | 37% diff, 3% merge, 60% encode |
 
-**Key optimizations (v0.181-0.202):**
-- **WebP upgrade**: webp 0.3 → fast-webp 0.1.1 (2-3× faster encoding)
-- **Arc-based caching**: Zero-copy tile cache with Arc<[u8]> (saved ~120 MB/s memory bandwidth)
-- **SIMD tile extraction**: AVX2/SSE2 optimized pixel copying
-- **Tile grid**: 20×20 grid (96×54px tiles) optimized for encoding speed
-- **Tile merging**: 83-99% tile reduction (e.g., 20627 → 247 tiles)
-- **Cache hits**: 41-67% tiles served from cache
-- **Zero-copy hashing**: 54-99% tiles skipped with Arc snapshot pattern
-- **Adaptive FPS**: Dynamic 32 FPS for changed content, 4 FPS for static
+Key numbers:
+- **Tile merging**: 83–99% tile reduction (e.g., 20 627 → 247 tiles)
+- **Cache hits**: 41–67% tiles served without re-encoding
+- **DMA-BUF vs SHM**: eliminates one kernel copy per frame on wlroots compositors
 
-## 🎯 WebP Codec Benchmarks
-
-Comparison of WebP implementations (96×54 tile, quality 75):
-
-| Codec | gradient | text | noise | Average Speed |
-|-------|----------|------|-------|---------------|
-| **fast-webp 0.1.1** | 0.24 ms | 0.22 ms | 0.30 ms | **1.0× (baseline)** |
-| webp 0.3 (old) | 0.47 ms | 0.46 ms | 0.60 ms | 0.5× (2× slower) |
-| webpx 0.4.0 | 0.45 ms | 0.29 ms | 0.54 ms | 0.6× |
-| webp-rust 0.2.1 | 0.74 ms | 0.36 ms | 0.89 ms | 0.4× |
-
-Run with: `cargo run --release --bin webp_codec_bench --features webp_bench`
-
-## 🔧 Building
+## Building
 
 ```bash
-# Standard build
+# Standard build (wlr-screencopy only)
 cargo build --release
 
-# Build with WebP codec benchmarks
-CC=/usr/lib/llvm/21/bin/clang cargo build --release --features webp_bench
+# With PipeWire support (GNOME, KDE, X11)
+cargo build --release --features pipewire_capture
+
+# Requires Clang on some systems
+CC=/usr/lib/llvm/22/bin/clang cargo build --release
 ```
 
-## 🎯 Running
+## Running
 
 ```bash
-# Start the server
+# Start the server (default: ws://localhost:9001)
 ./target/release/ring-2zero
 
-# Run advanced benchmark (simulated encoding)
-./target/release/advanced_bench
-
-# Run frame profiler (real encoding with breakdown)
-./target/release/frame_profiler
-
-# Compare WebP codec implementations
-CC=/usr/lib/llvm/21/bin/clang cargo run --release --bin webp_codec_bench --features webp_bench
+# Open the browser client
+xdg-open docs/client-examples/client.html
 ```
 
-## 📁 Project Structure
+## Dependencies
+
+System libraries required:
+- `libwayland-client` — Wayland protocol
+- `libgbm` — GBM buffer allocation for DMA-BUF path
+- `libdrm` — DRM render node access
+
+Optional (for `--features pipewire_capture`):
+- `libpipewire-0.3` — PipeWire stream
+- `libdbus-1` — xdg-desktop-portal D-Bus handshake
+
+## Project Structure
 
 ```
-.
-├── src/
-│   ├── main.rs              - WebRTC server entry point
-│   ├── stream.rs            - Streaming logic with tile merging
-│   ├── capture.rs           - Wayland screen capture
-│   ├── diff.rs              - Change detection with Arc-based snapshots
-│   ├── encoder.rs           - fast-webp encoding & tile merging
-│   ├── encoding_pool.rs     - Parallel encoding worker pool
-│   ├── tile.rs              - SIMD tile hashing (AVX2/SSE2) + Arc cache
-│   ├── tile_extract.rs      - SIMD tile extraction (AVX2/SSE2)
-│   ├── config.rs            - Configuration with CPU benchmarking
-│   └── bin/
-│       ├── advanced_bench.rs    - Simulated performance benchmark
-│       ├── frame_profiler.rs    - Real encoding with breakdown
-│       ├── webp_codec_bench.rs  - WebP implementation comparison
-│       ├── detailed_bench.rs    - Legacy benchmark
-│       ├── diff_profiler.rs     - Diff detection analysis
-│       ├── hash_analyzer.rs     - Hash collision testing
-│       └── modern_hash_bench.rs - Hash algorithm comparison
-└── docs/
-    ├── client-examples/     - HTML WebRTC client examples
-    ├── scripts/             - Benchmark scripts and logs
-    ├── OPTIMIZATIONS.md     - Optimization techniques
-    └── *.md                 - Technical documentation
+src/
+├── main.rs              — entry point
+├── server.rs            — WebSocket + WebRTC server
+├── stream.rs            — streaming loop, ACK system
+├── capture/
+│   ├── mod.rs           — backend auto-detection
+│   ├── wlr.rs           — wlr-screencopy (DMA-BUF + SHM fallback)
+│   └── pipewire.rs      — PipeWire via portal (feature-gated)
+├── diff.rs              — tile change detection
+├── encoder.rs           — WebP encoding + tile merging
+├── encoding_pool.rs     — parallel worker pool
+├── tile.rs              — tile hashing (AVX2/SSE2)
+├── tile_extract.rs      — tile extraction (AVX2/SSE2)
+├── convert.rs           — BGRX→RGBA (AVX2/SSE2)
+├── config.rs            — configuration + CPU benchmark cache
+└── shm.rs               — shared memory buffer (memfd)
+src_c/
+└── pw_capture.c         — PipeWire + D-Bus portal C helper
+docs/
+└── client-examples/
+    └── client.html      — browser WebRTC client
 ```
 
-## 📖 Documentation
+## Changelog
 
-- [Architecture Overview](docs/SMM_ARCHITECTURE.md)
-- [Optimizations Applied](docs/OPTIMIZATIONS_APPLIED.md)
-- [Encoding Pool Design](docs/ENCODING_POOL.md)
-- [SIMD Optimizations](docs/SIMD_CONVERSION.md)
-- [Latency Fixes](docs/LATENCY_FIX.md)
-- [Testing Guide](docs/TESTING.md)
-
-## 🔄 Changelog
+### v0.277 (July 2026)
+- **Added**: DMA-BUF zero-copy capture via wlr-screencopy v3 + libgbm (LINEAR GBM buffer, mmap read)
+- **Added**: PipeWire screencast backend via xdg-desktop-portal (GNOME, KDE, X11)
+- **Added**: Auto-detection of capture backend at startup
+- **Added**: ACK feedback system — 6-byte control packet, client confirms frame, server re-sends lost tiles
+- **Added**: Auto-reconnect — stream survives WebRTC re-negotiations without restarting WebSocket
 
 ### v0.202 (June 19, 2026)
-- **Fixed**: webp_codec_bench duplicate function (bench_webp_original → bench_fast_webp_current)
-- **Fixed**: advanced_bench now uses simulated time instead of real elapsed time for FPS calculation
-- **Improvement**: FPS metrics now correctly reflect fast-webp performance gains (2-3× speedup)
+- Fixed duplicate function in webp_codec_bench
+- FPS metrics now correctly reflect fast-webp performance
 
 ### v0.181 (June 18, 2026)
-- **Upgraded**: webp 0.3 → fast-webp 0.1.1 (2-3× faster encoding)
-- **Added**: webp_codec_bench tool comparing 4 WebP implementations
-- **Optimized**: Arc-based tile cache (zero-copy, saved ~120 MB/s bandwidth)
-- **Optimized**: SIMD tile extraction (AVX2/SSE2)
-- **Optimized**: Arc snapshots for hash vectors in diff detection
-- **Performance**: 3× overall speedup (2.4ms → 0.68-0.79ms per frame)
-- **Performance**: WebP encoding reduced from 87% to 62-73% of frame time
+- Upgraded webp 0.3 → fast-webp 0.1.1 (2–3× faster encoding)
+- Arc-based tile cache (zero-copy, ~120 MB/s bandwidth saved)
+- SIMD tile extraction (AVX2/SSE2)
+- 3× overall pipeline speedup
 
 ### v0.160 (June 17, 2026)
-- Tile merging optimization (83-99% reduction)
+- Tile merging (83–99% reduction)
 - Zero-copy hashing with SIMD
-- Thread safety fixes with snapshot pattern
 - CPU benchmark caching
 
-## 🐛 Bug Fixes (June 2026)
+## License
 
-Fixed 10 critical/medium/minor bugs:
-1. ✅ Memory leak in encoding_pool (16-20 MB per client)
-2. ✅ Race condition in tile_metadata
-3. ✅ Index out of bounds on encoding errors
-4. ✅ Inefficient select! loop (19× CPU overhead)
-5. ✅ Repeated buffer allocations (2.16 MB/sec churn)
-6. ✅ Unbounded WebSocket channel (DoS risk)
-7. ✅ Zombie threads after client disconnect
-8. ✅ Duplicate benchmark code (300 lines)
-9. ✅ Dead code on x86_64 (hash_scalar)
-10. ✅ CPU benchmark overhead (100ms startup)
-
-## 📝 License
-
-[Add your license here]
+MIT — see [LICENSE](LICENSE)
