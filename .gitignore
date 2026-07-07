@@ -16,3 +16,11 @@ Thumbs.db
 # Archives
 *.tar.gz
 *.zip
+
+# Debug/test artifacts
+test_wayland
+test_wayland.rs
+test_benchmark.rs
+librust_out.rlib
+SETUP.md
+docs/client-examples/test.html
