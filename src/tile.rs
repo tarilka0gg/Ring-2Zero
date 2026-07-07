@@ -1,5 +1,3 @@
-use xxhash_rust::xxh3::Xxh3;
-use std::sync::Arc;
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
