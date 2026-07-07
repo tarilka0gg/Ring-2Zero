@@ -13,11 +13,12 @@ use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 pub struct WebRTCConnection {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub data_channel: Arc<RTCDataChannel>,
+    data_channel_open_rx: Arc<Mutex<mpsc::Receiver<()>>>,
 }
 
 pub struct IceChannel {
@@ -69,7 +70,9 @@ impl WebRTCConnection {
             let ice_tx = ice_tx.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    let _ = ice_tx.send(candidate);
+                    if let Err(_) = ice_tx.send(candidate) {
+                        eprintln!("⚠️  WARNING: Failed to send ICE candidate (receiver dropped)");
+                    }
                 }
             })
         }));
@@ -85,10 +88,18 @@ impl WebRTCConnection {
             .create_data_channel("screen", Some(dc_init))
             .await?;
 
+        // Register on_open callback immediately to avoid race condition
+        let (open_tx, open_rx) = mpsc::channel::<()>(1);
+        data_channel.on_open(Box::new(move || {
+            let _ = open_tx.try_send(());
+            Box::pin(async {})
+        }));
+
         Ok((
             Self {
                 peer_connection,
                 data_channel,
+                data_channel_open_rx: Arc::new(Mutex::new(open_rx)),
             },
             IceChannel { ice_rx },
         ))
@@ -98,10 +109,7 @@ impl WebRTCConnection {
     pub async fn create_offer(&self) -> Result<String> {
         println!("Creating offer...");
 
-        let offer = self.peer_connection.create_offer(None).await?;
-        self.peer_connection.set_local_description(offer.clone()).await?;
-
-        // Wait for ICE gathering
+        // Register BEFORE set_local_description to avoid missing Complete on fast LAN
         let (ice_tx, mut ice_rx) = mpsc::channel::<()>(1);
         self.peer_connection.on_ice_gathering_state_change(Box::new(move |state| {
             if state == webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState::Complete {
@@ -109,6 +117,11 @@ impl WebRTCConnection {
             }
             Box::pin(async {})
         }));
+
+        let offer = self.peer_connection.create_offer(None).await?;
+        self.peer_connection.set_local_description(offer.clone()).await?;
+
+        // Wait for ICE gathering
 
         tokio::select! {
             _ = ice_rx.recv() => {
@@ -127,12 +140,7 @@ impl WebRTCConnection {
 
     /// Wait for DataChannel to open with timeout
     pub async fn wait_data_channel_open(&self, timeout_secs: u64) -> Result<bool> {
-        let (tx, mut rx) = mpsc::channel::<()>(1);
-
-        self.data_channel.on_open(Box::new(move || {
-            let _ = tx.try_send(());
-            Box::pin(async {})
-        }));
+        let mut rx = self.data_channel_open_rx.lock().await;
 
         tokio::select! {
             _ = rx.recv() => {
