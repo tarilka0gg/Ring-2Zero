@@ -2,6 +2,11 @@
 name = "ring-2zero"
 version = "0.277.0"
 edition = "2021"
+description = "High-performance Wayland screen streamer over WebRTC with tile-based diff encoding"
+license = "MIT"
+repository = "https://github.com/tarilka0gg/ring-2zero"
+keywords = ["wayland", "webrtc", "screencast", "streaming", "webp"]
+categories = ["multimedia::video", "network-programming"]
 
 [lib]
 name = "screen_streamer"
