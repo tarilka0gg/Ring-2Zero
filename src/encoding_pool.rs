@@ -2,7 +2,6 @@
 // Provides persistent worker threads with warm encoder cache
 
 use std::thread;
-use std::sync::Arc;
 use std::time::Duration;
 use crossbeam::channel::{bounded, Sender, Receiver};
 use crate::tile::Tile;
@@ -22,7 +21,7 @@ pub struct EncodedResult {
 pub struct EncodingPool {
     task_tx: Sender<EncodingTask>,
     result_rx: Receiver<EncodedResult>,
-    workers: Vec<thread::JoinHandle<()>>,
+    _workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl EncodingPool {
@@ -82,7 +81,7 @@ impl EncodingPool {
         Self {
             task_tx,
             result_rx,
-            workers,
+            _workers: workers,
         }
     }
 

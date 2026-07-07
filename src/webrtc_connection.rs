@@ -2,7 +2,6 @@
 // Handles PeerConnection creation, configuration, and DataChannel setup
 
 use crate::error::{Result, Error};
-use crate::config::Config;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
 use webrtc::peer_connection::configuration::RTCConfiguration;
@@ -18,7 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 pub struct WebRTCConnection {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub data_channel: Arc<RTCDataChannel>,
-    data_channel_open_rx: Arc<Mutex<mpsc::Receiver<()>>>,
+    data_channel_open_rx: Mutex<mpsc::Receiver<()>>,
 }
 
 pub struct IceChannel {
@@ -99,7 +98,7 @@ impl WebRTCConnection {
             Self {
                 peer_connection,
                 data_channel,
-                data_channel_open_rx: Arc::new(Mutex::new(open_rx)),
+                data_channel_open_rx: Mutex::new(open_rx),
             },
             IceChannel { ice_rx },
         ))

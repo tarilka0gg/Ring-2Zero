@@ -5,11 +5,13 @@ use crate::error::Result;
 use crate::frame::Frame;
 use crate::tile::Tile;
 
+use std::collections::HashMap;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::cell::RefCell;
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use bytes::Bytes;
 
 thread_local! {
@@ -56,7 +58,6 @@ impl StreamServer {
         }
     }
 
-    // Async версія з pipeline для WebRTC DataChannel
     pub async fn handle_client_async(
         &self,
         data_channel: Arc<RTCDataChannel>,
@@ -64,13 +65,37 @@ impl StreamServer {
     ) -> Result<()> {
         println!("Клієнт підключився!");
 
-        // Channel для pipeline: Process → Send
-        // Передаємо: (header_option, tiles, encoded, timestamp, elapsed_ms)
-        // Buffer=4 для балансу між латентністю та throughput
-        let (encode_tx, mut encode_rx) = tokio::sync::mpsc::channel::<(Option<(u32, u32)>, Vec<Tile>, Vec<Vec<u8>>, Instant, f64)>(4);
+        // --- ACK system setup ---
+        // Tiles lost in transit (ACK timeout) are pushed here by the async task
+        // and consumed by the processing thread to force re-send.
+        let stale_tiles: Arc<std::sync::Mutex<Vec<usize>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stale_tiles_thread = Arc::clone(&stale_tiles);
+
+        let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<u32>();
+        let ack_tx_cb = ack_tx.clone();
+        data_channel.on_message(Box::new(move |msg: DataChannelMessage| {
+            let ack_tx = ack_tx_cb.clone();
+            Box::pin(async move {
+                // Client ACKs are 4-byte little-endian u32 sequence numbers
+                if !msg.is_string && msg.data.len() == 4 {
+                    let bytes = [msg.data[0], msg.data[1], msg.data[2], msg.data[3]];
+                    let _ = ack_tx.send(u32::from_le_bytes(bytes));
+                }
+            })
+        }));
+
+        // encode channel: (header, tiles, encoded, tile_indices, timestamp, elapsed_ms)
+        let (encode_tx, mut encode_rx) = tokio::sync::mpsc::channel::<(
+            Option<(u32, u32)>,
+            Vec<Tile>,
+            Vec<Vec<u8>>,
+            Vec<usize>,
+            Instant,
+            f64,
+        )>(4);
 
         let config = self.config.clone();
-        // Thread: Capture → Diff → Encode → Channel
         let process_handle = std::thread::spawn(move || {
             let frame_duration = config.frame_duration();
             let mut diff_detector = DiffDetector::new(config.clone());
@@ -79,23 +104,28 @@ impl StreamServer {
             let mut last_full_refresh = Instant::now();
             let full_refresh_interval = Duration::from_secs(1);
 
-            // Create tile buffer pool
-            // With tiles_x=20: 96×54px = 20,736 bytes
-            // With tiles_x=16: 120×68px = 32,640 bytes (worst case for common configs)
-            // Allocate for worst case to avoid reallocations
             let tile_buffer_pool = crate::tile_buffer_pool::TileBufferPool::new(
-                120 * 68 * 4,  // Max tile size for tiles_x=16 on 1920×1080
-                50             // Initial buffer count
+                120 * 68 * 4,
+                50,
             );
 
-            // Create encoding pool with worker threads (passes buffer_pool for reuse)
             let encoding_pool = crate::encoding_pool::EncodingPool::new(
-                num_cpus::get().max(4),  // Use all CPU cores, minimum 4
-                tile_buffer_pool.clone() // Workers return buffers after encoding
+                num_cpus::get().max(4),
+                tile_buffer_pool.clone(),
             );
 
             loop {
                 let deadline = Instant::now() + frame_duration;
+
+                // Apply stale tile invalidations from ACK timeout before diff
+                {
+                    let mut stale = stale_tiles_thread.lock().unwrap();
+                    if !stale.is_empty() {
+                        let indices: Vec<usize> = std::mem::take(&mut *stale);
+                        diff_detector.invalidate_tiles(&indices);
+                        println!("Re-queued {} tiles lost in transit", indices.len());
+                    }
+                }
 
                 let frame = match Self::receive_frame(&frame_rx, deadline) {
                     Some(f) => f,
@@ -105,12 +135,8 @@ impl StreamServer {
                 let (width, height) = (frame.width, frame.height);
                 let t0 = Instant::now();
 
-                // Перевіряємо чи змінився розмір
                 let send_header = if screen_size.map_or(true, |s| s != (width, height)) {
-                    // Замість reset() робимо invalidate_cache() щоб уникнути відправки всього екрану одразу
-                    // При зміні розміру тайли поступово оновляться
                     if screen_size.is_some() {
-                        // Якщо це зміна розміру (не перший запуск) - робимо повний reset
                         diff_detector.reset();
                     }
                     screen_size = Some((width, height));
@@ -120,8 +146,6 @@ impl StreamServer {
                     None
                 };
 
-                // Перевіряємо чи потрібен full refresh (кожну секунду)
-                // Замість reset() використовуємо invalidate_cache() щоб не відправляти весь екран одразу
                 let force_full_refresh = last_full_refresh.elapsed() >= full_refresh_interval;
                 if force_full_refresh {
                     diff_detector.invalidate_cache();
@@ -131,9 +155,8 @@ impl StreamServer {
                 let (changed_tiles, _) = diff_detector.detect_changes(&frame);
 
                 if changed_tiles.is_empty() {
-                    // Якщо треба відправити header але немає тайлів - все одно відправляємо
                     if let Some(size) = send_header {
-                        if encode_tx.blocking_send((Some(size), vec![], vec![], Instant::now(), 0.0)).is_err() {
+                        if encode_tx.blocking_send((Some(size), vec![], vec![], vec![], Instant::now(), 0.0)).is_err() {
                             break;
                         }
                     }
@@ -168,41 +191,32 @@ impl StreamServer {
                 let sorted_tiles: Vec<Tile> = tiles_with_data.iter().map(|(t, _, _)| *t).collect();
                 let sorted_tile_indices: Vec<usize> = tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
 
-                // Optimization #3: Async encoding через pool
                 let tile_hashes: Vec<u64> = sorted_tile_indices.iter()
                     .map(|&idx| diff_detector.get_current_hashes()[idx])
                     .collect();
 
-                // Pre-fill encoded vec and track submissions
                 let mut encoded = vec![Vec::new(); sorted_tiles.len()];
                 let mut submitted_count = 0;
 
-                // Submit encoding tasks to pool
                 for (i, tile) in sorted_tiles.iter().enumerate() {
                     let tile_idx = sorted_tile_indices[i];
-                    let _tile_hash = tile_hashes[i];
 
-                    // Check cache first - take directly without pre-cloning
                     let metadata = diff_detector.get_metadata(tile_idx);
                     if metadata.cached_hash == tile_hashes[i] {
                         if let Some(ref cached) = metadata.cached_encoded {
-                            // Cache hit - clone once directly into encoded
                             encoded[i] = cached.clone();
                             continue;
                         }
                     }
 
-                    // Get buffer from pool (reusable)
                     let mut tile_buffer = tile_buffer_pool.get();
                     let tile_size = (tile.width * tile.height * 4) as usize;
 
-                    // Resize if needed (rare case for non-standard tile sizes)
                     if tile_buffer.len() != tile_size {
                         tile_buffer.clear();
                         tile_buffer.resize(tile_size, 0);
                     }
 
-                    // Extract tile data with SIMD optimization
                     crate::tile_extract::extract_tile(
                         &frame.rgba,
                         &mut tile_buffer,
@@ -213,10 +227,9 @@ impl StreamServer {
                         width,
                     );
 
-                    // Submit to encoding pool
                     let task = crate::encoding_pool::EncodingTask {
                         tile: *tile,
-                        tile_data: tile_buffer, // Pool buffer (will not be returned)
+                        tile_data: tile_buffer,
                         tile_idx,
                     };
 
@@ -224,17 +237,14 @@ impl StreamServer {
                     submitted_count += 1;
                 }
 
-                // Collect only submitted tasks (not cache hits)
                 let encoded_results = encoding_pool.collect_results(submitted_count);
 
-                // Build index map for O(1) lookup instead of O(n²) position()
-                let tile_idx_to_pos: std::collections::HashMap<usize, usize> = sorted_tile_indices
+                let tile_idx_to_pos: HashMap<usize, usize> = sorted_tile_indices
                     .iter()
                     .enumerate()
                     .map(|(pos, &idx)| (idx, pos))
                     .collect();
 
-                // Fill in non-cached results with O(1) lookup
                 for result in encoded_results {
                     if let Some(&pos) = tile_idx_to_pos.get(&result.tile_idx) {
                         encoded[pos] = result.data;
@@ -243,7 +253,6 @@ impl StreamServer {
                     }
                 }
 
-                // Verify all tiles were encoded and collect missing indices
                 let mut missing_tiles = Vec::new();
                 for (i, data) in encoded.iter().enumerate() {
                     if data.is_empty() {
@@ -251,7 +260,6 @@ impl StreamServer {
                     }
                 }
 
-                // Re-encode missing tiles synchronously as fallback
                 for i in missing_tiles {
                     let tile_idx = sorted_tile_indices[i];
                     eprintln!("❌ ERROR: Tile {} was not encoded (worker panic or channel overflow)", tile_idx);
@@ -260,23 +268,17 @@ impl StreamServer {
                     let fallback_encoded = TILE_BUFFER.with(|buf| {
                         let mut tile_buffer = buf.borrow_mut();
 
-                        // Bounds check: clamp tile dimensions to frame boundaries
                         let max_height = height.saturating_sub(tile.y).min(tile.height);
                         let max_width = width.saturating_sub(tile.x).min(tile.width);
 
-                        // Skip zero-dimension tiles (out of bounds)
                         if max_width == 0 || max_height == 0 {
-                            eprintln!("⚠️  Skipping out-of-bounds tile ({}, {}): {}×{} doesn't fit in {}×{}",
-                                      tile.x, tile.y, tile.width, tile.height, width, height);
                             return Vec::new();
                         }
 
                         let tile_size = (max_width * max_height * 4) as usize;
-
                         tile_buffer.clear();
                         tile_buffer.resize(tile_size, 0);
 
-                        // Extract tile data with SIMD optimization (with bounds checking)
                         crate::tile_extract::extract_tile(
                             &frame.rgba,
                             &mut tile_buffer,
@@ -287,7 +289,6 @@ impl StreamServer {
                             width,
                         );
 
-                        // Encode with actual extracted dimensions, not original tile dimensions
                         fast_webp::encode_rgba(
                             &tile_buffer,
                             max_width,
@@ -296,36 +297,16 @@ impl StreamServer {
                                 quality: tile.quality,
                                 ..Default::default()
                             },
-                        ).unwrap_or_else(|e| {
-                            eprintln!("⚠️  WebP fallback encoding error at tile ({}, {}), {}×{}: {:?}",
-                                      tile.x, tile.y, max_width, max_height, e);
-                            eprintln!("    Attempting second fallback with quality 50...");
-
-                            // Second fallback: try with lower quality
-                            fast_webp::encode_rgba(
-                                &tile_buffer,
-                                max_width,
-                                max_height,
-                                fast_webp::WebpOptions {
-                                    quality: 50.0,
-                                    ..Default::default()
-                                },
-                            ).unwrap_or_else(|e2| {
-                                eprintln!("❌ CRITICAL: All fallback attempts failed: {:?}", e2);
-                                Vec::new()
-                            })
-                        })
+                        ).unwrap_or_else(|_| Vec::new())
                     });
 
                     encoded[i] = fallback_encoded;
                 }
 
-                // Update cache (get mutable reference after parallel work is done)
                 let tile_metadata = diff_detector.get_all_metadata_mut();
                 for (i, &tile_idx) in sorted_tile_indices.iter().enumerate() {
                     let metadata = &mut tile_metadata[tile_idx];
                     if !encoded[i].is_empty() {
-                        // Store encoded tile in cache
                         metadata.cached_encoded = Some(encoded[i].clone());
                         metadata.cached_hash = tile_hashes[i];
                     }
@@ -334,8 +315,7 @@ impl StreamServer {
                 let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 let timestamp = Instant::now();
 
-                // Відправляємо в channel з header якщо потрібно
-                if encode_tx.blocking_send((send_header, sorted_tiles, encoded, timestamp, elapsed_ms)).is_err() {
+                if encode_tx.blocking_send((send_header, sorted_tiles, encoded, sorted_tile_indices, timestamp, elapsed_ms)).is_err() {
                     break;
                 }
 
@@ -343,24 +323,58 @@ impl StreamServer {
             }
         });
 
-        // Tokio task: Channel → Async Send
+        // --- Async send loop with ACK tracking ---
+        let mut frame_seq: u32 = 0;
+        // seq → (sent_at, tile_indices)
+        let mut pending_acks: HashMap<u32, (Instant, Vec<usize>)> = HashMap::new();
+        let ack_timeout = Duration::from_millis(150);
+
         let mut frame_count = 0u64;
         let mut avg_ms = 0.0f64;
 
-        while let Some((header, tiles, encoded, timestamp, elapsed_ms)) = encode_rx.recv().await {
-            // Відправляємо header якщо потрібно
+        while let Some((header, tiles, encoded, tile_indices, timestamp, elapsed_ms)) = encode_rx.recv().await {
+            // Drain incoming ACKs
+            while let Ok(acked_seq) = ack_rx.try_recv() {
+                pending_acks.remove(&acked_seq);
+            }
+
+            // Find timed-out frames and push their tiles to stale list
+            let now = Instant::now();
+            let timed_out: Vec<u32> = pending_acks.iter()
+                .filter(|(_, (sent_at, _))| now.duration_since(*sent_at) > ack_timeout)
+                .map(|(seq, _)| *seq)
+                .collect();
+
+            if !timed_out.is_empty() {
+                let mut stale = stale_tiles.lock().unwrap();
+                for seq in timed_out {
+                    if let Some((_, indices)) = pending_acks.remove(&seq) {
+                        stale.extend(indices);
+                    }
+                }
+            }
+
             if let Some((width, height)) = header {
                 self.send_header_async(&data_channel, width, height).await?;
             }
 
-            // Відправляємо тайли якщо є
             if !tiles.is_empty() {
+                // Send sequence control packet: 0xFFFE (u16) | seq (u32) = 6 bytes
+                frame_seq = frame_seq.wrapping_add(1);
+                let seq = frame_seq;
+                let mut seq_pkt = [0u8; 6];
+                seq_pkt[0..2].copy_from_slice(&0xFFFEu16.to_le_bytes());
+                seq_pkt[2..6].copy_from_slice(&seq.to_le_bytes());
+                data_channel.send(&Bytes::copy_from_slice(&seq_pkt)).await?;
+
+                pending_acks.insert(seq, (Instant::now(), tile_indices));
+
                 let queue_time = timestamp.elapsed();
                 let send_start = Instant::now();
                 self.send_tiles_async(&data_channel, &tiles, &encoded).await?;
                 let send_time = send_start.elapsed();
 
-                let stats = FrameStats::new(tiles.len(), &encoded, Duration::ZERO);
+                let stats = FrameStats::new(tiles.len(), &encoded);
                 frame_count += 1;
                 avg_ms += (elapsed_ms - avg_ms) / frame_count as f64;
 
@@ -373,30 +387,22 @@ impl StreamServer {
             }
         }
 
-        // Wait for processing thread to finish with timeout
         let join_timeout = Duration::from_secs(5);
         match tokio::time::timeout(
             join_timeout,
             tokio::task::spawn_blocking(move || process_handle.join())
         ).await {
-            Ok(Ok(Ok(_))) => {
-                println!("Processing thread finished successfully");
-            }
+            Ok(Ok(Ok(_))) => println!("Processing thread finished successfully"),
             Ok(Ok(Err(e))) => {
                 return Err(crate::error::Error::WebRTC(format!("Processing thread panicked: {:?}", e)));
             }
-            Ok(Err(e)) => {
-                eprintln!("Failed to spawn blocking task: {:?}", e);
-            }
-            Err(_) => {
-                eprintln!("⚠️  Processing thread did not finish within {}s, may be hung", join_timeout.as_secs());
-            }
+            Ok(Err(e)) => eprintln!("Failed to spawn blocking task: {:?}", e),
+            Err(_) => eprintln!("⚠️  Processing thread did not finish within {}s", join_timeout.as_secs()),
         }
 
         Ok(())
     }
 
-    // Static версія calculate_priority для використання в thread
     fn calculate_priority_static(tile: &Tile, metadata: &crate::tile::TileMetadata, width: u32, height: u32, config: &Config) -> f32 {
         let frequency_score = metadata.update_frequency();
         let change_speed = (metadata.last_hash_diff.count_ones() as f32) / 64.0;
@@ -417,10 +423,9 @@ impl StreamServer {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        // Validate dimensions fit in u16
         if width > 65535 || height > 65535 {
             return Err(crate::error::Error::WebRTC(format!(
-                "Screen resolution {}×{} exceeds protocol limit (max 65535×65535)",
+                "Screen resolution {}×{} exceeds protocol limit",
                 width, height
             )));
         }
@@ -450,7 +455,6 @@ impl StreamServer {
 
         let result = Self::do_send(data_channel, tiles, encoded, &mut frame_data, &mut tile_buffer).await;
 
-        // Always return buffers to pool, even on error
         frame_data.clear();
         tile_buffer.clear();
         *self.frame_data_buf.lock().unwrap() = frame_data;
@@ -514,12 +518,8 @@ struct FrameStats {
 }
 
 impl FrameStats {
-    fn new(tiles_sent: usize, encoded: &[Vec<u8>], _elapsed: Duration) -> Self {
+    fn new(tiles_sent: usize, encoded: &[Vec<u8>]) -> Self {
         let total_kbits = encoded.iter().map(|e| e.len()).sum::<usize>() as f64 * 8.0 / 1000.0;
-
-        Self {
-            tiles_sent,
-            total_kbits,
-        }
+        Self { tiles_sent, total_kbits }
     }
 }

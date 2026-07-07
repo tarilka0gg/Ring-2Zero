@@ -266,7 +266,7 @@ impl DiffDetector {
         // Use HashSet for O(1) lookup instead of Vec.contains() O(n)
         let changed_set: HashSet<usize> = tile_indices.iter().copied().collect();
 
-        let mut unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
+        let unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
             .filter(|i| !changed_set.contains(i))
             .map(|i| (i, self.tile_metadata[i].unchanged_frames))
             .collect();
@@ -334,6 +334,18 @@ impl DiffDetector {
         self.frame_count = 0;
         self.skipped_hashes = 0;
         self.total_hashes = 0;
+    }
+
+    /// Force re-detection of specific tiles (called when ACK timeout means they were lost in transit).
+    pub fn invalidate_tiles(&mut self, indices: &[usize]) {
+        for &i in indices {
+            if i < self.tile_metadata.len() {
+                self.tile_metadata[i].cached_hash = 0;
+                self.tile_metadata[i].cached_encoded = None;
+                self.prev_hashes[i] = 0;
+                self.prev_prev_hashes[i] = 0;
+            }
+        }
     }
 
     /// Force re-encoding of tiles that were sent at low quality (dynamic mode).

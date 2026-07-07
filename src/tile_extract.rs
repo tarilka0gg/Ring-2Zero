@@ -169,7 +169,7 @@ fn extract_tile_rows_scalar(
 ) {
     for row in 0..tile_height {
         let src_offset = (((tile_y + row) * frame_width + tile_x) * 4) as usize;
-        let dst_offset = (row as usize * row_bytes);
+        let dst_offset = row as usize * row_bytes;
         tile_buffer[dst_offset..dst_offset + row_bytes]
             .copy_from_slice(&frame_rgba[src_offset..src_offset + row_bytes]);
     }
