@@ -40,7 +40,6 @@ name = "advanced_bench"
 path = "src/bin/advanced_bench.rs"
 
 [dependencies]
-
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
@@ -66,3 +65,7 @@ webp-rust = { version = "0.2.1", optional = true }
 [features]
 quality_metrics = []
 webp_bench = ["webp", "webpx", "webp-rust"]
+pipewire_capture = []
+
+[build-dependencies]
+cc = "1"
