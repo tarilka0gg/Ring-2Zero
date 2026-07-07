@@ -23,13 +23,28 @@ impl SignalingChannel {
         Self { ws_tx, ice_rx }
     }
 
-    /// Start forwarding ICE candidates to WebSocket
-    pub fn start_ice_forwarding(mut self) {
+    /// Send offer through WebSocket, then start forwarding ICE candidates
+    pub async fn send_offer_and_start_forwarding(mut self, sdp: String) -> Result<()> {
+        let offer_json = serde_json::json!({
+            "type": "offer",
+            "sdp": sdp
+        });
+        self.ws_tx.send(Message::Text(offer_json.to_string())).await
+            .map_err(|_| Error::WebRTC("Failed to send offer (channel full or closed)".into()))?;
+
+        // Start ICE forwarding in background
         tokio::spawn(async move {
             while let Some(candidate) = self.ice_rx.recv().await {
+                let candidate_str = match candidate.to_json() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Failed to serialize ICE candidate, skipping: {}", e);
+                        continue;
+                    }
+                };
                 let candidate_json = serde_json::json!({
                     "type": "candidate",
-                    "candidate": candidate.to_json().unwrap()
+                    "candidate": candidate_str
                 });
                 if self.ws_tx.send(Message::Text(candidate_json.to_string())).await.is_err() {
                     eprintln!("Failed to send ICE candidate (channel full or closed)");
@@ -38,16 +53,8 @@ impl SignalingChannel {
                 println!("Sent ICE candidate to client");
             }
         });
-    }
 
-    /// Send offer through WebSocket
-    pub async fn send_offer(&self, sdp: String) -> Result<()> {
-        let offer_json = serde_json::json!({
-            "type": "offer",
-            "sdp": sdp
-        });
-        self.ws_tx.send(Message::Text(offer_json.to_string())).await
-            .map_err(|_| Error::WebRTC("Failed to send offer (channel full or closed)".into()))
+        Ok(())
     }
 }
 

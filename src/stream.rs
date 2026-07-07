@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::diff::DiffDetector;
-use crate::encoder::{TileEncoder, TileMerger};
+use crate::encoder::TileMerger;
 use crate::error::Result;
 use crate::frame::Frame;
 use crate::tile::Tile;
@@ -66,18 +66,18 @@ impl StreamServer {
 
         // Channel для pipeline: Process → Send
         // Передаємо: (header_option, tiles, encoded, timestamp, elapsed_ms)
-        // Buffer=0 для мінімальної латентності (rendezvous channel)
-        let (encode_tx, mut encode_rx) = tokio::sync::mpsc::channel::<(Option<(u32, u32)>, Vec<Tile>, Vec<Vec<u8>>, Instant, f64)>(0);
+        // Buffer=4 для балансу між латентністю та throughput
+        let (encode_tx, mut encode_rx) = tokio::sync::mpsc::channel::<(Option<(u32, u32)>, Vec<Tile>, Vec<Vec<u8>>, Instant, f64)>(4);
 
         let config = self.config.clone();
-        let _tile_encoder = TileEncoder::new(config.clone());
-
         // Thread: Capture → Diff → Encode → Channel
         let process_handle = std::thread::spawn(move || {
             let frame_duration = config.frame_duration();
             let mut diff_detector = DiffDetector::new(config.clone());
             let tile_merger = TileMerger::new(config.merge_gap);
             let mut screen_size: Option<(u32, u32)> = None;
+            let mut last_full_refresh = Instant::now();
+            let full_refresh_interval = Duration::from_secs(1);
 
             // Create tile buffer pool
             // With tiles_x=20: 96×54px = 20,736 bytes
@@ -107,14 +107,28 @@ impl StreamServer {
 
                 // Перевіряємо чи змінився розмір
                 let send_header = if screen_size.map_or(true, |s| s != (width, height)) {
-                    diff_detector.reset();
+                    // Замість reset() робимо invalidate_cache() щоб уникнути відправки всього екрану одразу
+                    // При зміні розміру тайли поступово оновляться
+                    if screen_size.is_some() {
+                        // Якщо це зміна розміру (не перший запуск) - робимо повний reset
+                        diff_detector.reset();
+                    }
                     screen_size = Some((width, height));
+                    last_full_refresh = Instant::now();
                     Some((width, height))
                 } else {
                     None
                 };
 
-                let (changed_tiles, tile_indices) = diff_detector.detect_changes(&frame);
+                // Перевіряємо чи потрібен full refresh (кожну секунду)
+                // Замість reset() використовуємо invalidate_cache() щоб не відправляти весь екран одразу
+                let force_full_refresh = last_full_refresh.elapsed() >= full_refresh_interval;
+                if force_full_refresh {
+                    diff_detector.invalidate_cache();
+                    last_full_refresh = Instant::now();
+                }
+
+                let (changed_tiles, _) = diff_detector.detect_changes(&frame);
 
                 if changed_tiles.is_empty() {
                     // Якщо треба відправити header але немає тайлів - все одно відправляємо
@@ -139,15 +153,13 @@ impl StreamServer {
                     height,
                 );
 
-                // Keep original tile_idx with tile during sorting
                 let mut tiles_with_data: Vec<(Tile, usize, f32)> = merged_tiles
                     .iter()
-                    .enumerate()
-                    .map(|(enum_idx, tile)| {
-                        let tile_idx = tile_indices[enum_idx];
+                    .map(|tile| {
+                        let tile_idx = (tile.y / tile_height * config.tiles_x + tile.x / tile_width) as usize;
                         let metadata = diff_detector.get_metadata(tile_idx);
                         let priority = Self::calculate_priority_static(tile, metadata, width, height, &config);
-                        (*tile, tile_idx, priority)  // Store original tile_idx, not enum index
+                        (*tile, tile_idx, priority)
                     })
                     .collect();
 
@@ -361,7 +373,26 @@ impl StreamServer {
             }
         }
 
-        let _ = process_handle.join();
+        // Wait for processing thread to finish with timeout
+        let join_timeout = Duration::from_secs(5);
+        match tokio::time::timeout(
+            join_timeout,
+            tokio::task::spawn_blocking(move || process_handle.join())
+        ).await {
+            Ok(Ok(Ok(_))) => {
+                println!("Processing thread finished successfully");
+            }
+            Ok(Ok(Err(e))) => {
+                return Err(crate::error::Error::WebRTC(format!("Processing thread panicked: {:?}", e)));
+            }
+            Ok(Err(e)) => {
+                eprintln!("Failed to spawn blocking task: {:?}", e);
+            }
+            Err(_) => {
+                eprintln!("⚠️  Processing thread did not finish within {}s, may be hung", join_timeout.as_secs());
+            }
+        }
+
         Ok(())
     }
 
@@ -386,6 +417,14 @@ impl StreamServer {
         width: u32,
         height: u32,
     ) -> Result<()> {
+        // Validate dimensions fit in u16
+        if width > 65535 || height > 65535 {
+            return Err(crate::error::Error::WebRTC(format!(
+                "Screen resolution {}×{} exceeds protocol limit (max 65535×65535)",
+                width, height
+            )));
+        }
+
         let mut header = Vec::with_capacity(6);
         header.extend_from_slice(&0xFFFFu16.to_le_bytes());
         header.extend_from_slice(&(width as u16).to_le_bytes());
@@ -400,21 +439,34 @@ impl StreamServer {
         tiles: &[Tile],
         encoded: &[Vec<u8>],
     ) -> Result<()> {
-        // Зменшений розмір пакету для нижчої латентності
-        const MAX_PACKET_SIZE: usize = 8_000; // 8KB - баланс між латентністю та overhead
-
-        // Clone buffers into local variables to avoid holding MutexGuard across await
         let mut frame_data = {
             let mut buf = self.frame_data_buf.lock().unwrap();
-            buf.clear();
-            buf.clone()
+            std::mem::take(&mut *buf)
         };
-
         let mut tile_buffer = {
             let mut buf = self.tile_buffer_buf.lock().unwrap();
-            buf.clear();
-            buf.clone()
+            std::mem::take(&mut *buf)
         };
+
+        let result = Self::do_send(data_channel, tiles, encoded, &mut frame_data, &mut tile_buffer).await;
+
+        // Always return buffers to pool, even on error
+        frame_data.clear();
+        tile_buffer.clear();
+        *self.frame_data_buf.lock().unwrap() = frame_data;
+        *self.tile_buffer_buf.lock().unwrap() = tile_buffer;
+
+        result
+    }
+
+    async fn do_send(
+        data_channel: &Arc<RTCDataChannel>,
+        tiles: &[Tile],
+        encoded: &[Vec<u8>],
+        frame_data: &mut Vec<u8>,
+        tile_buffer: &mut Vec<u8>,
+    ) -> Result<()> {
+        const MAX_PACKET_SIZE: usize = 8_000;
 
         for (tile, webp) in tiles.iter().zip(encoded.iter()) {
             tile_buffer.clear();
@@ -424,21 +476,32 @@ impl StreamServer {
             tile_buffer.extend_from_slice(&(tile.height as u16).to_le_bytes());
             tile_buffer.extend_from_slice(webp);
 
-            let tile_size = 4 + tile_buffer.len(); // 4 bytes для довжини + дані тайла
+            let tile_size = 4 + tile_buffer.len();
 
-            // Якщо додавання цього тайла перевищить ліміт - відправляємо поточний пакет НЕГАЙНО
+            if tile_size > MAX_PACKET_SIZE {
+                if !frame_data.is_empty() {
+                    data_channel.send(&Bytes::copy_from_slice(frame_data)).await?;
+                    frame_data.clear();
+                }
+                let mut large_tile = Vec::with_capacity(tile_size);
+                large_tile.extend_from_slice(&(tile_buffer.len() as u32).to_le_bytes());
+                large_tile.extend_from_slice(tile_buffer);
+                data_channel.send(&Bytes::from(large_tile)).await?;
+                continue;
+            }
+
             if !frame_data.is_empty() && frame_data.len() + tile_size > MAX_PACKET_SIZE {
-                data_channel.send(&Bytes::from(frame_data.clone())).await?;
+                data_channel.send(&Bytes::copy_from_slice(frame_data)).await?;
                 frame_data.clear();
             }
 
             frame_data.extend_from_slice(&(tile_buffer.len() as u32).to_le_bytes());
-            frame_data.extend_from_slice(&tile_buffer);
+            frame_data.extend_from_slice(tile_buffer);
         }
 
-        // Відправляємо залишок
         if !frame_data.is_empty() {
-            data_channel.send(&Bytes::from(frame_data.clone())).await?;
+            data_channel.send(&Bytes::copy_from_slice(frame_data)).await?;
+            frame_data.clear();
         }
 
         Ok(())

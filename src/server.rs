@@ -59,15 +59,10 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
     // Create WebRTC connection
     let (webrtc_conn, ice_channel) = WebRTCConnection::new().await?;
 
-    // Setup signaling channel
-    let signaling = SignalingChannel::new(ws_tx.clone(), ice_channel.ice_rx);
-    signaling.start_ice_forwarding();
-
-    // Create and send offer
+    // Create and send offer, then start ICE forwarding
     let offer_sdp = webrtc_conn.create_offer().await?;
-    let (_dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel();
-    let signal_tx = SignalingChannel::new(ws_tx.clone(), dummy_rx);
-    signal_tx.send_offer(offer_sdp).await?;
+    let signaling = SignalingChannel::new(ws_tx.clone(), ice_channel.ice_rx);
+    signaling.send_offer_and_start_forwarding(offer_sdp).await?;
 
     println!("Offer sent, waiting for answer...");
 

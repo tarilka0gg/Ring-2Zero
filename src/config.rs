@@ -31,17 +31,17 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             ws_port: 9001,
-            target_fps: std::num::NonZeroU64::new(32).unwrap(),
+            target_fps: std::num::NonZeroU64::new(60).unwrap(),
             tiles_x: 20,
-            webp_quality_low: 0.5,
-            webp_quality_high: 8.0,
+            webp_quality_low: 1.0,
+            webp_quality_high: 10.0,
             merge_gap: 0,
             priority_history_window: 30,
             priority_frequency_weight: 0.5,
             priority_speed_weight: 0.3,
             priority_center_weight: 0.2,
-            static_tile_fps: std::num::NonZeroU64::new(4).unwrap(),
-            dynamic_tile_fps: std::num::NonZeroU64::new(32).unwrap(),
+            static_tile_fps: std::num::NonZeroU64::new(16).unwrap(),
+            dynamic_tile_fps: std::num::NonZeroU64::new(60).unwrap(),
             debug_mode: false,
         }
     }

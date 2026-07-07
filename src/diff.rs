@@ -335,4 +335,19 @@ impl DiffDetector {
         self.skipped_hashes = 0;
         self.total_hashes = 0;
     }
+
+    /// Force re-encoding of tiles that were sent at low quality (dynamic mode).
+    /// Resets both prev_hashes entries so detect_changes classifies them as static
+    /// (is_dynamic=false) → they get re-encoded at webp_quality_high on the next frame.
+    pub fn invalidate_cache(&mut self) {
+        for i in 0..self.tile_metadata.len() {
+            self.tile_metadata[i].cached_hash = 0;
+            self.tile_metadata[i].cached_encoded = None;
+            if self.tile_metadata[i].last_sent_as_dynamic {
+                // prev_prev == prev → is_dynamic = false → high-quality re-encode
+                self.prev_hashes[i] = 0;
+                self.prev_prev_hashes[i] = 0;
+            }
+        }
+    }
 }
