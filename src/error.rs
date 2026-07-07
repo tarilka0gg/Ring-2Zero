@@ -8,6 +8,8 @@ pub enum Error {
     FrameFailed,
     WebRTC(String),
     Io(std::io::Error),
+    DmaBuf(String),
+    PipeWire(String),
 }
 
 impl fmt::Display for Error {
@@ -19,6 +21,8 @@ impl fmt::Display for Error {
             Self::FrameFailed => write!(f, "захоплення кадру провалилось"),
             Self::WebRTC(e) => write!(f, "WebRTC: {e}"),
             Self::Io(e) => write!(f, "IO: {e}"),
+            Self::DmaBuf(e) => write!(f, "DMA-BUF: {e}"),
+            Self::PipeWire(e) => write!(f, "PipeWire: {e}"),
         }
     }
 }
