@@ -80,7 +80,7 @@
 
 <div id="viewport">
   <canvas id="display-canvas"></canvas>
-  <div id="overlay"><p>Очікування підключення через WebRTC...<br><small>Server: ws://localhost:9001</small></p></div>
+  <div id="overlay"><p>Очікування підключення через WebRTC...<br><small id="server-label">Server: ws://localhost:9001</small></p></div>
 </div>
 
 <script>
@@ -218,14 +218,18 @@
     }
   }
 
+  // Server address override: open this page as client.html?server=100.x.x.x:9001
+  // (e.g. a Tailscale IP) to connect to a remote host instead of localhost.
+  const wsUrl = 'ws://' + (new URLSearchParams(location.search).get('server') || 'localhost:9001');
+  document.getElementById('server-label').textContent = `Server: ${wsUrl}`;
+
   async function connect() {
     resetStats();
 
     statusDot.className = 'connecting';
-    statusText.textContent = 'Підключення до ws://localhost:9001...';
+    statusText.textContent = `Підключення до ${wsUrl}...`;
 
     try {
-      const wsUrl = 'ws://localhost:9001';
       console.log('Connecting to:', wsUrl);
       ws = new WebSocket(wsUrl);
 
