@@ -30,6 +30,17 @@ impl TileMerger {
             }
         }
 
+        // Cap how many original grid tiles a single merged tile can span in
+        // each direction. Without this, a full-screen refresh (all tiles
+        // dirty, all contiguous) merges into one tile covering the entire
+        // frame — its encoded size can exceed the WebRTC DataChannel's
+        // message-size limit (observed: an 85 KB single-tile send tripped
+        // "outbound packet larger than maximum message size" on a real
+        // client). Chunking bounds the worst case regardless of how large a
+        // contiguous dirty region is.
+        const MAX_MERGE_TILES_X: u32 = 4;
+        const MAX_MERGE_TILES_Y: u32 = 4;
+
         let mut merged = Vec::new();
 
         for ((ty_start, ty_end), mut cols) in run_cols {
@@ -41,14 +52,28 @@ impl TileMerger {
                     let tx_start = cols[group_start];
                     let tx_end = cols[i - 1];
 
-                    let x = tx_start * tile_width;
-                    let y = ty_start * tile_height;
-                    let width = ((tx_end + 1) * tile_width).min(frame_width) - x;
-                    let height = ((ty_end + 1) * tile_height).min(frame_height) - y;
+                    let mut chunk_ty_start = ty_start;
+                    while chunk_ty_start <= ty_end {
+                        let chunk_ty_end = (chunk_ty_start + MAX_MERGE_TILES_Y - 1).min(ty_end);
+                        let mut chunk_tx_start = tx_start;
+                        while chunk_tx_start <= tx_end {
+                            let chunk_tx_end = (chunk_tx_start + MAX_MERGE_TILES_X - 1).min(tx_end);
 
-                    let quality = self.average_quality_fast(&tile_quality_map, tx_start, tx_end, ty_start, ty_end);
+                            let x = chunk_tx_start * tile_width;
+                            let y = chunk_ty_start * tile_height;
+                            let width = ((chunk_tx_end + 1) * tile_width).min(frame_width) - x;
+                            let height = ((chunk_ty_end + 1) * tile_height).min(frame_height) - y;
 
-                    merged.push(Tile::new(x, y, width, height, quality));
+                            let quality = self.average_quality_fast(
+                                &tile_quality_map, chunk_tx_start, chunk_tx_end, chunk_ty_start, chunk_ty_end,
+                            );
+
+                            merged.push(Tile::new(x, y, width, height, quality));
+                            chunk_tx_start = chunk_tx_end + 1;
+                        }
+                        chunk_ty_start = chunk_ty_end + 1;
+                    }
+
                     group_start = i;
                 }
             }

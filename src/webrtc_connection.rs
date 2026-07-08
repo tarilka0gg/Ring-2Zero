@@ -31,11 +31,40 @@ impl WebRTCConnection {
         let m = MediaEngine::default();
         let mut s = webrtc::api::setting_engine::SettingEngine::default();
 
-        // Aggressive timeouts for minimal latency
+        // Safari (and Chrome) obfuscate host ICE candidates behind a random
+        // <uuid>.local mDNS name instead of the real LAN IP, as a privacy
+        // measure. Without this, our ICE agent has no way to resolve that
+        // name to an address, so every candidate from such a browser is
+        // silently unusable and ICE can never find a working pair.
+        s.set_ice_multicast_dns_mode(webrtc_ice::mdns::MulticastDnsMode::QueryOnly);
+
+        // IPv4 only: a dual-stack host (e.g. a Tailscale interface also
+        // offering an IPv6 ULA address alongside its IPv4 one) makes ICE
+        // gather multiple host candidates for the *same* logical path.
+        // Without STUN priority tie-breaking, the wrong one can get selected
+        // first, and if that path is actually flaky it can leave the
+        // connection stuck/flapping instead of falling back cleanly.
+        s.set_ip_filter(Box::new(|ip: std::net::IpAddr| ip.is_ipv4()));
+
+        // Optionally restrict ICE host-candidate gathering to a single named
+        // interface (e.g. RING2ZERO_ICE_INTERFACE=tailscale0), so a machine
+        // with multiple interfaces (LAN + VPN) doesn't advertise a LAN
+        // candidate the remote peer can't actually reach.
+        if let Ok(iface) = std::env::var("RING2ZERO_ICE_INTERFACE") {
+            s.set_interface_filter(Box::new(move |name: &str| name == iface));
+        }
+
+        // These were tuned aggressively (5s/10s/500ms) for same-machine,
+        // near-zero-latency testing. Over a real network path (Wi-Fi,
+        // mobile data, through a VPN like Tailscale) that's tight enough for
+        // ordinary jitter to trip a "disconnected" state within a few missed
+        // keepalives, silently killing the session after only the first
+        // couple of messages went through. These values are closer to
+        // typical browser defaults, tolerant of real-world latency/jitter.
         s.set_ice_timeouts(
-            Some(std::time::Duration::from_secs(5)),      // disconnected timeout
-            Some(std::time::Duration::from_secs(10)),     // failed timeout
-            Some(std::time::Duration::from_millis(500)),  // keepalive interval
+            Some(std::time::Duration::from_secs(15)),     // disconnected timeout
+            Some(std::time::Duration::from_secs(30)),     // failed timeout
+            Some(std::time::Duration::from_secs(2)),      // keepalive interval
         );
 
         let api = APIBuilder::new()
@@ -69,6 +98,7 @@ impl WebRTCConnection {
             let ice_tx = ice_tx.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
+                    println!("ICE candidate: {} {}:{} typ={:?}", candidate.protocol, candidate.address, candidate.port, candidate.typ);
                     if let Err(_) = ice_tx.send(candidate) {
                         eprintln!("⚠️  WARNING: Failed to send ICE candidate (receiver dropped)");
                     }
@@ -76,10 +106,37 @@ impl WebRTCConnection {
             })
         }));
 
-        // Create DataChannel with low-latency settings
+        {
+            let pc = Arc::clone(&peer_connection);
+            tokio::spawn(async move {
+                let dtls_transport = pc.sctp().transport();
+                let ice_transport = dtls_transport.ice_transport();
+                let mut last: Option<String> = None;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    if pc.connection_state() == RTCPeerConnectionState::Closed { break; }
+                    if let Some(pair) = ice_transport.get_selected_candidate_pair().await {
+                        let s = format!("{:?}", pair);
+                        if Some(&s) != last.as_ref() {
+                            println!("Selected candidate pair: {s}");
+                            last = Some(s);
+                        }
+                    }
+                }
+            });
+        }
+
+        // Create DataChannel: unordered (avoid head-of-line blocking latency)
+        // but reliable (SCTP retransmits lost fragments). A tile message is
+        // split into several SCTP chunks; with max_retransmits(0), losing any
+        // single chunk drops the *entire* message with no recovery — over a
+        // real lossy path (e.g. mobile data through a VPN) this made almost
+        // all multi-chunk tile messages vanish while tiny single-chunk
+        // control packets got through, since loss probability compounds per
+        // chunk. Leaving retransmits enabled (None = reliable) fixes that;
+        // the app-level ACK/stale-tile system still handles the remaining
+        // rare loss/staleness cases.
         let dc_init = RTCDataChannelInit {
-            ordered: Some(false),       // Disable ordering for lower latency
-            max_retransmits: Some(0),   // No retransmits - better to skip frame
             ..Default::default()
         };
 
