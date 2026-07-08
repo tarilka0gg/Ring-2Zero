@@ -27,6 +27,8 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
 
     println!("WebRTC signaling server (WebSocket): ws://{addr}");
+    println!("Auth token: {}", config.auth_token);
+    println!("Connect clients with: client.html?server=<host>:{}&token={}", config.ws_port, config.auth_token);
     println!("Target FPS: {}", config.target_fps.get());
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());

@@ -13,8 +13,9 @@ use std::sync::{
     mpsc, Arc,
 };
 use tokio::net::TcpStream;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use futures_util::{SinkExt, StreamExt};
 
 /// Handle incoming TCP connection - dispatch to WebSocket or HTTP handler
@@ -34,9 +35,29 @@ pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<
     }
 }
 
+/// Extract a query parameter's value from a URI's query string (e.g. `token=abc` in `?token=abc&x=1`).
+fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
+    query.split('&').find_map(|kv| {
+        let mut parts = kv.splitn(2, '=');
+        if parts.next()? == key { parts.next() } else { None }
+    })
+}
+
 /// Handle WebSocket connection and establish WebRTC — with auto-reconnect
 async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Result<()> {
-    let ws_stream = accept_async(stream).await
+    let expected_token = config.auth_token.clone();
+    let ws_stream = accept_hdr_async(stream, move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+        let provided = req.uri().query().and_then(|q| query_param(q, "token"));
+        if provided == Some(expected_token.as_str()) {
+            Ok(response)
+        } else {
+            let resp = tokio_tungstenite::tungstenite::http::Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Some("Unauthorized: missing or invalid token".to_string()))
+                .unwrap();
+            Err(resp)
+        }
+    }).await
         .map_err(|e| Error::WebRTC(format!("WebSocket upgrade failed: {}", e)))?;
 
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel::<Message>(32);

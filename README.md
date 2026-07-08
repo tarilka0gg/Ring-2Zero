@@ -66,22 +66,30 @@ server machine and the viewing device, then:
 
 ```bash
 sudo emerge --ask net-vpn/tailscale   # Gentoo; use your distro's package manager otherwise
-sudo rc-update add tailscaled default && sudo rc-service tailscaled start
+sudo rc-update add tailscale default && sudo rc-service tailscale start
 sudo tailscale up                     # opens a browser link to log in
 ```
 
 Find the server's Tailscale IP with `tailscale ip -4`, then open the client
-with that address instead of localhost:
+with that address instead of localhost. The server prints an `Auth token`
+on startup — pass it through as well:
 
 ```
-docs/client-examples/client.html?server=100.x.x.x:9001
+docs/client-examples/client.html?server=100.x.x.x:9001&token=<token from server startup log>
 ```
 
-There is currently no authentication on the signaling server — treat the
-port as equivalent to full remote access to your screen. Restricting it to
-a VPN (rather than a public port-forward) is the safe default; do not
-expose port 9001 directly to the internet without adding your own
-authentication in front of it.
+## Authentication
+
+The signaling server requires a token, checked during the WebSocket
+handshake (`?token=...` query param). By default a random token is
+generated on each startup and printed to stdout; set `RING2ZERO_TOKEN` in
+the environment to use a fixed one instead (useful for scripting a
+restart without having to re-share a new token each time). A connection
+without a matching token gets an HTTP 401 and is never upgraded.
+
+This guards the signaling handshake itself, but is still no substitute for
+network-level isolation — prefer keeping the port reachable only over a
+VPN (like Tailscale above) rather than a public port-forward.
 
 ## Dependencies
 
