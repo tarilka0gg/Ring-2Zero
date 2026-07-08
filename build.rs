@@ -4,18 +4,22 @@ fn main() {
 
     // Compile the PipeWire capture helper only when the feature is requested
     if std::env::var("CARGO_FEATURE_PIPEWIRE_CAPTURE").is_ok() {
-        cc::Build::new()
-            .file("src_c/pw_capture.c")
-            .include("/usr/include/pipewire-0.3")
-            .include("/usr/include/spa-0.2")
-            .include("/usr/include/dbus-1.0")
-            .include("/usr/lib64/dbus-1.0/include")
-            .flag("-fno-strict-aliasing")
-            .flag("-fno-strict-overflow")
-            .compile("pw_capture");
+        let pipewire = pkg_config::Config::new()
+            .probe("libpipewire-0.3")
+            .expect("libpipewire-0.3 not found (install libpipewire-0.3-dev / pipewire-devel)");
+        let dbus = pkg_config::Config::new()
+            .probe("dbus-1")
+            .expect("dbus-1 not found (install libdbus-1-dev / dbus-devel)");
 
-        println!("cargo:rustc-link-lib=pipewire-0.3");
-        println!("cargo:rustc-link-lib=dbus-1");
-        println!("cargo:rustc-link-search=native=/usr/lib64");
+        let mut build = cc::Build::new();
+        build.file("src_c/pw_capture.c")
+            .flag("-fno-strict-aliasing")
+            .flag("-fno-strict-overflow");
+
+        for path in pipewire.include_paths.iter().chain(dbus.include_paths.iter()) {
+            build.include(path);
+        }
+
+        build.compile("pw_capture");
     }
 }
