@@ -218,10 +218,14 @@
     }
   }
 
-  // Server address override: open this page as client.html?server=100.x.x.x:9001
-  // (e.g. a Tailscale IP) to connect to a remote host instead of localhost.
-  const wsUrl = 'ws://' + (new URLSearchParams(location.search).get('server') || 'localhost:9001');
-  document.getElementById('server-label').textContent = `Server: ${wsUrl}`;
+  // Server address override: open this page as
+  // client.html?server=100.x.x.x:9001&token=<auth token printed by the server>
+  // to connect to a remote host instead of localhost.
+  const pageParams = new URLSearchParams(location.search);
+  const wsHost = pageParams.get('server') || 'localhost:9001';
+  const wsToken = pageParams.get('token') || '';
+  const wsUrl = `ws://${wsHost}?token=${encodeURIComponent(wsToken)}`;
+  document.getElementById('server-label').textContent = `Server: ws://${wsHost}`;
 
   async function connect() {
     resetStats();

@@ -25,6 +25,7 @@ pub struct Config {
     pub static_tile_fps: std::num::NonZeroU64,
     pub dynamic_tile_fps: std::num::NonZeroU64,
     pub debug_mode: bool,
+    pub auth_token: String,
 }
 
 impl Default for Config {
@@ -43,11 +44,39 @@ impl Default for Config {
             static_tile_fps: std::num::NonZeroU64::new(16).unwrap(),
             dynamic_tile_fps: std::num::NonZeroU64::new(60).unwrap(),
             debug_mode: false,
+            auth_token: Self::load_or_generate_token(),
         }
     }
 }
 
 impl Config {
+    /// Reads RING2ZERO_TOKEN from the environment if set (lets the token
+    /// persist across restarts / be scripted), otherwise generates a random
+    /// one for this run.
+    fn load_or_generate_token() -> String {
+        match std::env::var("RING2ZERO_TOKEN") {
+            Ok(t) if !t.is_empty() => t,
+            _ => Self::generate_random_token(),
+        }
+    }
+
+    fn generate_random_token() -> String {
+        use std::io::Read;
+        let mut buf = [0u8; 16];
+        if std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut buf))
+            .is_err()
+        {
+            // Extremely unlikely fallback if /dev/urandom is unavailable.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            buf = nanos.to_le_bytes();
+        }
+        buf.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
     pub fn frame_duration(&self) -> std::time::Duration {
         std::time::Duration::from_millis(1000 / self.target_fps.get())
     }
