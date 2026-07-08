@@ -54,6 +54,35 @@ CC=/usr/lib/llvm/22/bin/clang cargo build --release
 xdg-open docs/client-examples/client.html
 ```
 
+## Remote access
+
+The server binds to `0.0.0.0:9001`, so it's reachable from any network
+interface — including a VPN. The signaling exchange (WebSocket) works fine
+over a VPN; the WebRTC media itself needs no separate STUN/TURN setup in
+this case, since both peers appear to be on the same virtual LAN.
+
+Recommended: [Tailscale](https://tailscale.com/) — install it on both the
+server machine and the viewing device, then:
+
+```bash
+sudo emerge --ask net-vpn/tailscale   # Gentoo; use your distro's package manager otherwise
+sudo rc-update add tailscaled default && sudo rc-service tailscaled start
+sudo tailscale up                     # opens a browser link to log in
+```
+
+Find the server's Tailscale IP with `tailscale ip -4`, then open the client
+with that address instead of localhost:
+
+```
+docs/client-examples/client.html?server=100.x.x.x:9001
+```
+
+There is currently no authentication on the signaling server — treat the
+port as equivalent to full remote access to your screen. Restricting it to
+a VPN (rather than a public port-forward) is the safe default; do not
+expose port 9001 directly to the internet without adding your own
+authentication in front of it.
+
 ## Dependencies
 
 System libraries required:
