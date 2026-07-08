@@ -3,7 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta charset="UTF-8">
-<title>Screen Stream Client</title>
+<title>Ring-2Zero</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -65,6 +65,46 @@
     text-align: center; color: #444; pointer-events: none; z-index: 10;
   }
   #overlay p { font-size: 14px; margin-top: 8px; }
+
+  #password-overlay {
+    position: absolute; inset: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    background: #0a0a0a;
+    z-index: 20;
+  }
+  #password-form {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    width: 240px;
+  }
+  #password-form h1 {
+    font-size: 20px; letter-spacing: 1px; margin-bottom: 8px; color: #e0e0e0;
+  }
+  #password-row {
+    display: flex; width: 100%; gap: 8px;
+  }
+  #password-input {
+    flex: 1; min-width: 0; padding: 10px 12px;
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+    color: #e0e0e0; font-family: inherit; font-size: 14px;
+  }
+  #password-input:focus { outline: none; border-color: #666; }
+  #password-toggle {
+    flex-shrink: 0; padding: 10px 12px;
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+    cursor: pointer; font-size: 14px;
+  }
+  #password-form button[type="submit"] {
+    width: 100%; padding: 10px 12px;
+    background: #2a2a2a; border: 1px solid #444; border-radius: 6px;
+    color: #e0e0e0; font-family: inherit; font-size: 14px; cursor: pointer;
+  }
+  #password-form button[type="submit"]:hover { background: #333; }
+  #password-toggle:hover { background: #333; }
+  #password-error {
+    display: none;
+    color: #e05555; font-size: 13px;
+  }
 </style>
 </head>
 <body>
@@ -75,12 +115,24 @@
   <div>Трафік: <span id="frame-size">—</span></div>
   <div>Латентність: <span id="latency">—</span></div>
   <div>Розмір: <span id="info">—</span></div>
+  <div>Debug: <span id="debug-info">—</span></div>
   <button id="btn-mode">FIT</button>
 </div>
 
 <div id="viewport">
   <canvas id="display-canvas"></canvas>
   <div id="overlay"><p>Очікування підключення через WebRTC...<br><small id="server-label">Server: ws://localhost:9001</small></p></div>
+  <div id="password-overlay">
+    <form id="password-form">
+      <h1>Ring-2Zero</h1>
+      <div id="password-row">
+        <input id="password-input" type="password" placeholder="Пароль" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus>
+        <button type="button" id="password-toggle">👁</button>
+      </div>
+      <button type="submit">Увійти</button>
+      <p id="password-error">Невірний пароль</p>
+    </form>
+  </div>
 </div>
 
 <script>
@@ -98,6 +150,14 @@
   const latencyEl   = document.getElementById('latency');
   const infoEl      = document.getElementById('info');
   const btnMode     = document.getElementById('btn-mode');
+  const passwordOverlay = document.getElementById('password-overlay');
+  const passwordForm    = document.getElementById('password-form');
+  const passwordInput   = document.getElementById('password-input');
+  const passwordError   = document.getElementById('password-error');
+  const passwordToggle  = document.getElementById('password-toggle');
+  passwordToggle.addEventListener('click', () => {
+    passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password';
+  });
 
   let mode    = 'fit';
   let screenW = 0;
@@ -207,6 +267,19 @@
                               // stale (abandoned) negotiation attempt apart
                               // from the current one after a reconnect
   let ackPending = null; // { seq, remaining } for the tile batch currently being decoded
+  let decodeOkCount = 0;
+  let decodeFailCount = 0;
+  let msgCount = 0;
+  let ackMsgCount = 0;
+  let tileMsgCount = 0;
+
+  const debugInfoEl = document.getElementById('debug-info');
+  setInterval(() => {
+    debugInfoEl.textContent =
+      `msgs=${msgCount} ack=${ackMsgCount} tileMsgs=${tileMsgCount} ` +
+      `decoded=${decodeOkCount} failed=${decodeFailCount} pending=${pending.length} ` +
+      `screen=${screenW}x${screenH} canvas=${dispCanvas.width}x${dispCanvas.height}`;
+  }, 1000);
 
   function maybeAck(entry) {
     if (!entry) return;
@@ -218,26 +291,65 @@
     }
   }
 
-  // Server address override: open this page as
-  // client.html?server=100.x.x.x:9001&token=<auth token printed by the server>
-  // to connect to a remote host instead of localhost.
+  // Server address override: open this page as client.html?server=100.x.x.x:9001
+  // to connect to a different host. Defaults to this deployment's fixed address
+  // so the plain URL (no query params at all) works as a bookmarkable link.
   const pageParams = new URLSearchParams(location.search);
-  const wsHost = pageParams.get('server') || 'localhost:9001';
-  const wsToken = pageParams.get('token') || '';
-  const wsUrl = `ws://${wsHost}?token=${encodeURIComponent(wsToken)}`;
-  document.getElementById('server-label').textContent = `Server: ws://${wsHost}`;
+  const wsHost = pageParams.get('server') || 'ring2zero.tail2ef003.ts.net:9001';
+  // Match the page's own scheme: a page loaded over https must use wss (Safari
+  // blocks ws:// as mixed content from a secure page, and requires https for
+  // WebRTC to work at all).
+  const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  document.getElementById('server-label').textContent = `Server: ${wsScheme}://${wsHost}`;
+
+  const TOKEN_STORAGE_KEY = 'ring2zero_token';
+
+  function buildWsUrl(token) {
+    return `${wsScheme}://${wsHost}?token=${encodeURIComponent(token)}`;
+  }
+
+  // Password gate: ask once, remember on this device (localStorage) so the
+  // bookmarked link doesn't need the token pasted into the URL bar (visible
+  // in history/autocomplete) every time.
+  function promptForToken(showError) {
+    return new Promise((resolve) => {
+      passwordOverlay.style.display = 'flex';
+      passwordError.style.display = showError ? 'block' : 'none';
+      passwordInput.value = '';
+      passwordInput.focus();
+      passwordForm.onsubmit = (e) => {
+        e.preventDefault();
+        const value = passwordInput.value;
+        if (!value) return;
+        passwordOverlay.style.display = 'none';
+        resolve(value);
+      };
+    });
+  }
+
+  let lastAuthFailed = false;
 
   async function connect() {
     resetStats();
 
+    let token = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!token) {
+      token = await promptForToken(lastAuthFailed);
+      lastAuthFailed = false;
+    }
+    const wsUrl = buildWsUrl(token);
+
     statusDot.className = 'connecting';
-    statusText.textContent = `Підключення до ${wsUrl}...`;
+    statusText.textContent = `Підключення до ${wsScheme}://${wsHost}...`;
 
     try {
       console.log('Connecting to:', wsUrl);
       ws = new WebSocket(wsUrl);
+      let wsOpened = false;
 
       ws.onopen = () => {
+        wsOpened = true;
+        localStorage.setItem(TOKEN_STORAGE_KEY, token);
         console.log('WebSocket connected, waiting for offer...');
         statusText.textContent = 'WebSocket підключено, чекаємо offer...';
       };
@@ -293,6 +405,7 @@
               };
 
               dataChannel.onmessage = (event) => {
+                msgCount++;
                 const receiveTime = performance.now();
                 const data = event.data;
                 const view = new DataView(data);
@@ -311,12 +424,14 @@
                 // successfully decoded (see maybeAck below), not sent here on
                 // marker receipt alone.
                 if (marker === 0xFFFE) {
+                  ackMsgCount++;
                   const seq = view.getUint32(2, true);
                   const tileCount = view.getUint32(6, true);
                   ackPending = { seq, remaining: tileCount };
                   return;
                 }
 
+                tileMsgCount++;
                 let offset = 0;
                 const now = Date.now();
 
@@ -336,13 +451,18 @@
                     .then(bitmap => {
                       pending.push({ bitmap, x, y, w, h });
                       scheduleRaf();
+                      decodeOkCount++;
 
                       const decodeTime = performance.now() - receiveTime;
                       latencySum += decodeTime;
                       latencyCount++;
                       maybeAck(ackEntry);
                     })
-                    .catch(e => console.error('WebP decode failed:', e));
+                    .catch(e => {
+                      decodeFailCount++;
+                      console.error('WebP decode failed:', e);
+                      statusText.textContent = `Decode fail ${decodeFailCount}/${decodeFailCount + decodeOkCount}: ${e && e.message ? e.message : e}`;
+                    });
                     // Deliberately not ack'd on decode failure: withholding the
                     // ACK lets the server's ack_timeout classify this tile as
                     // stale and resend it.
@@ -423,6 +543,7 @@
           }
         } catch (err) {
           console.error('Message handling error:', err);
+          statusText.textContent = 'Помилка: ' + (err && err.message ? err.message : String(err));
         }
       };
 
@@ -435,13 +556,23 @@
       ws.onclose = () => {
         console.log('WebSocket closed');
         statusDot.className = 'error';
-        statusText.textContent = 'З\'єднання закрито';
+        if (!wsOpened) {
+          // Never got past the handshake — most likely a wrong/stale token.
+          // The WebSocket API doesn't expose the HTTP status code, so this is
+          // a best-effort guess rather than a certain diagnosis.
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          lastAuthFailed = true;
+          statusText.textContent = 'Не вдалося увійти — можливо, невірний пароль';
+          setTimeout(connect, 300);
+        } else {
+          statusText.textContent = 'З\'єднання закрито';
+        }
       };
 
     } catch (err) {
       console.error('Connection failed:', err);
       statusDot.className = 'error';
-      statusText.textContent = 'Не вдалося підключитися';
+      statusText.textContent = 'Не вдалося підключитися: ' + (err && err.message ? err.message : String(err));
     }
   }
 

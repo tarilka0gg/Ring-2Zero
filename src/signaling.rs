@@ -68,14 +68,28 @@ impl SignalingChannel {
 /// messages tagged with a different (stale) session are ignored, since the
 /// same `ws_receiver` is reused across reconnect attempts and a late message
 /// from an abandoned attempt must not be applied to this `peer_connection`.
-pub async fn wait_for_answer(
-    ws_receiver: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>>,
+pub async fn wait_for_answer<S>(
+    ws_receiver: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<S>>,
     peer_connection: Arc<RTCPeerConnection>,
     timeout_secs: u64,
     session: u64,
-) -> Result<bool> {
+) -> Result<bool>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
     let deadline = tokio::time::Instant::now() + timeout;
+
+    // The client fires onicecandidate (and sends each candidate over this
+    // same WebSocket) as soon as ICE gathering starts, right after
+    // setLocalDescription — well before it sends the "answer" message, which
+    // it deliberately delays until ICE gathering completes (or a timeout).
+    // That means nearly every candidate arrives here *before*
+    // set_remote_description() has been called, and add_ice_candidate()
+    // rejects them with "remote description is not set". Buffer any
+    // candidate that arrives before the answer, then apply them all once the
+    // remote description is actually set.
+    let mut pending_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit> = Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         tokio::select! {
@@ -93,13 +107,24 @@ pub async fn wait_for_answer(
                                     println!("Got answer");
                                     let answer = RTCSessionDescription::answer(sdp.to_owned())?;
                                     peer_connection.set_remote_description(answer).await?;
+
+                                    for candidate_init in pending_candidates.drain(..) {
+                                        if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
+                                            eprintln!("Failed to add buffered ICE candidate: {}", e);
+                                        } else {
+                                            println!("Added buffered ICE candidate from client");
+                                        }
+                                    }
                                     return Ok(true);
                                 }
                             } else if json.get("type").and_then(|v| v.as_str()) == Some("candidate") {
                                 // Handle ICE candidates from client
                                 if let Some(candidate_obj) = json.get("candidate") {
+                                    println!("Remote ICE candidate: {}", candidate_obj);
                                     if let Ok(candidate_init) = serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(candidate_obj.clone()) {
-                                        if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
+                                        if peer_connection.remote_description().await.is_none() {
+                                            pending_candidates.push(candidate_init);
+                                        } else if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
                                             eprintln!("Failed to add ICE candidate: {}", e);
                                         } else {
                                             println!("Added ICE candidate from client");

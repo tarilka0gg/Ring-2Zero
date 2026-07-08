@@ -1,13 +1,51 @@
 use screen_streamer::{
     config::Config,
     error::Result,
-    server::handle_connection,
+    server::{handle_connection, handle_connection_tls},
 };
 
+use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
+use tokio_rustls::TlsAcceptor;
+
+/// Loads a TLS acceptor from RING2ZERO_TLS_CERT / RING2ZERO_TLS_KEY (PEM files),
+/// e.g. from `tailscale cert`. Safari requires a secure context for WebRTC, so
+/// remote/Safari clients need `wss://` — this is what makes that possible.
+fn load_tls_acceptor() -> Option<TlsAcceptor> {
+    let cert_path = std::env::var("RING2ZERO_TLS_CERT").ok()?;
+    let key_path = std::env::var("RING2ZERO_TLS_KEY").ok()?;
+
+    let cert_file = std::fs::File::open(&cert_path)
+        .unwrap_or_else(|e| panic!("Cannot open RING2ZERO_TLS_CERT ({cert_path}): {e}"));
+    let mut cert_reader = std::io::BufReader::new(cert_file);
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap_or_else(|e| panic!("Failed to parse RING2ZERO_TLS_CERT: {e}"));
+
+    let key_file = std::fs::File::open(&key_path)
+        .unwrap_or_else(|e| panic!("Cannot open RING2ZERO_TLS_KEY ({key_path}): {e}"));
+    let mut key_reader = std::io::BufReader::new(key_file);
+    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
+        .unwrap_or_else(|e| panic!("Failed to parse RING2ZERO_TLS_KEY: {e}"))
+        .expect("RING2ZERO_TLS_KEY contains no private key");
+
+    let tls_config = RustlsServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("Invalid TLS certificate/key pair");
+
+    Some(TlsAcceptor::from(Arc::new(tls_config)))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug for
+    // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
+    // checks, mDNS query results) when troubleshooting a connection.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
     let args: Vec<String> = std::env::args().collect();
 
     // Auto-detect optimal config based on CPU performance
@@ -23,10 +61,30 @@ async fn main() -> Result<()> {
         println!("[DEBUG MODE ENABLED]");
     }
 
+    // Quick bandwidth-constrained testing knob: RING2ZERO_MAX_FPS=5 caps
+    // target/static/dynamic tile FPS uniformly, without touching the
+    // adaptive-quality machinery.
+    if let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") {
+        if let Ok(fps) = fps_str.parse::<u64>() {
+            if let Some(nz) = std::num::NonZeroU64::new(fps) {
+                config.target_fps = nz;
+                config.static_tile_fps = nz;
+                config.dynamic_tile_fps = nz;
+                println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
+            }
+        }
+    }
+
     let addr = format!("0.0.0.0:{}", config.ws_port);
     let listener = TcpListener::bind(&addr).await?;
 
-    println!("WebRTC signaling server (WebSocket): ws://{addr}");
+    let tls_acceptor = load_tls_acceptor();
+    let scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
+
+    println!("WebRTC signaling server (WebSocket): {scheme}://{addr}");
+    if tls_acceptor.is_none() {
+        println!("TLS disabled — set RING2ZERO_TLS_CERT/RING2ZERO_TLS_KEY for wss:// (required for Safari/iOS remote access)");
+    }
     println!("Auth token: {}", config.auth_token);
     println!("Connect clients with: client.html?server=<host>:{}&token={}", config.ws_port, config.auth_token);
     println!("Target FPS: {}", config.target_fps.get());
@@ -37,10 +95,23 @@ async fn main() -> Result<()> {
         let (tcp_stream, _) = listener.accept().await?;
         let config = config.clone();
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(tcp_stream, config).await {
-                eprintln!("Connection error: {e}");
-            }
-        });
+        if let Some(acceptor) = tls_acceptor.clone() {
+            tokio::spawn(async move {
+                match acceptor.accept(tcp_stream).await {
+                    Ok(tls_stream) => {
+                        if let Err(e) = handle_connection_tls(tls_stream, config).await {
+                            eprintln!("Connection error: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("TLS handshake failed: {e}"),
+                }
+            });
+        } else {
+            tokio::spawn(async move {
+                if let Err(e) = handle_connection(tcp_stream, config).await {
+                    eprintln!("Connection error: {e}");
+                }
+            });
+        }
     }
 }

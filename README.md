@@ -70,22 +70,35 @@ sudo rc-update add tailscale default && sudo rc-service tailscale start
 sudo tailscale up                     # opens a browser link to log in
 ```
 
-Find the server's Tailscale IP with `tailscale ip -4`, then open the client
-with that address instead of localhost. The server prints an `Auth token`
-on startup — pass it through as well:
+Safari (and iOS in general) requires a secure context for WebRTC — set
+`RING2ZERO_TLS_CERT`/`RING2ZERO_TLS_KEY` (e.g. from `tailscale cert
+<device>.<tailnet>.ts.net`) to serve `wss://` instead of `ws://`, and serve
+`client.html` itself over HTTPS too (any static file server with the same
+cert works).
 
-```
-docs/client-examples/client.html?server=100.x.x.x:9001&token=<token from server startup log>
-```
+If the server machine has more than one network interface (e.g. a LAN port
+alongside the Tailscale one), ICE may otherwise advertise a candidate the
+remote peer can't reach. Set `RING2ZERO_ICE_INTERFACE=tailscale0` to restrict
+candidate gathering to just the VPN interface.
+
+Find the server's Tailscale hostname (`tailscale status`, or rename the
+device with `tailscale set --hostname=<name>` for a nicer URL), then open
+`client.html?server=<name>.<tailnet>.ts.net:9001` from the viewing device —
+or just `client.html` on its own if that's already the default in
+`docs/client-examples/client.html`.
 
 ## Authentication
 
 The signaling server requires a token, checked during the WebSocket
 handshake (`?token=...` query param). By default a random token is
 generated on each startup and printed to stdout; set `RING2ZERO_TOKEN` in
-the environment to use a fixed one instead (useful for scripting a
-restart without having to re-share a new token each time). A connection
-without a matching token gets an HTTP 401 and is never upgraded.
+the environment to use a fixed one instead. A connection without a
+matching token gets an HTTP 401 and is never upgraded.
+
+The client page (`client.html`) doesn't take the token via URL — it prompts
+for a password on first load and remembers it in the browser's
+`localStorage`, so the token never sits in the address bar/history. This is
+what `RING2ZERO_TOKEN` should be set to.
 
 This guards the signaling handshake itself, but is still no substitute for
 network-level isolation — prefer keeping the port reachable only over a
@@ -129,6 +142,15 @@ docs/
 ```
 
 ## Changelog
+
+### v0.291 (July 2026)
+- **Fixed**: ICE candidates from the client were dropped whenever they arrived before the SDP answer (a common race, since the client fires `onicecandidate` before sending its answer) — they're now buffered and applied once the remote description is set. This was silently breaking nearly every non-localhost connection.
+- **Fixed**: Safari/Chrome obfuscate host ICE candidates behind a `<uuid>.local` mDNS name; mDNS resolution is now explicitly enabled so these candidates actually resolve instead of being unusable.
+- **Fixed**: a full-screen refresh could merge every dirty tile into one oversized message exceeding the DataChannel's message-size limit — merged tiles are now capped to a bounded grid size.
+- **Added**: TLS support (`RING2ZERO_TLS_CERT`/`RING2ZERO_TLS_KEY`) — required for Safari/iOS, which refuses WebRTC on an insecure page.
+- **Added**: `RING2ZERO_ICE_INTERFACE` to restrict ICE candidate gathering to one network interface (e.g. `tailscale0`) on multi-homed machines.
+- **Added**: password-gated client — `client.html` prompts for the token instead of taking it via URL, and remembers it in `localStorage`.
+- **Changed**: ICE disconnect/keepalive timeouts relaxed from same-machine-tuned defaults to values tolerant of real network latency/jitter.
 
 ### v0.277 (July 2026)
 - **Added**: DMA-BUF zero-copy capture via wlr-screencopy v3 + libgbm (LINEAR GBM buffer, mmap read)

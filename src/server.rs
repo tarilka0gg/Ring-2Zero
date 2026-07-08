@@ -12,13 +12,14 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use futures_util::{SinkExt, StreamExt};
 
-/// Handle incoming TCP connection - dispatch to WebSocket or HTTP handler
+/// Handle incoming plaintext TCP connection - dispatch to WebSocket or HTTP handler
 pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<()> {
     let mut buffer = [0u8; 1024];
     let stream = tcp_stream;
@@ -35,6 +36,19 @@ pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<
     }
 }
 
+/// Handle an already-TLS-terminated connection (see `main.rs`'s TLS acceptor).
+/// Safari requires a secure context for WebRTC, so remote/Safari clients need
+/// `wss://` here rather than `ws://`. There's no plaintext HTTP peeking on
+/// this path since a TLS listener on this port only ever serves the WS
+/// upgrade.
+pub async fn handle_connection_tls<S>(stream: S, config: Config) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    println!("WebSocket connection (TLS)");
+    handle_websocket_connection(stream, config).await
+}
+
 /// Extract a query parameter's value from a URI's query string (e.g. `token=abc` in `?token=abc&x=1`).
 fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     query.split('&').find_map(|kv| {
@@ -44,7 +58,10 @@ fn query_param<'a>(query: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// Handle WebSocket connection and establish WebRTC — with auto-reconnect
-async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Result<()> {
+async fn handle_websocket_connection<S>(stream: S, config: Config) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let expected_token = config.auth_token.clone();
     let ws_stream = accept_hdr_async(stream, move |req: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
         let provided = req.uri().query().and_then(|q| query_param(q, "token"));
