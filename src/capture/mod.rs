@@ -25,18 +25,18 @@ pub struct ScreenCapture {
 }
 
 impl ScreenCapture {
-    pub fn new(frame_tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Self {
-        let backend = Self::detect(frame_tx, stop);
-        Self { backend }
+    pub fn new(frame_tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Result<Self> {
+        let backend = Self::detect(frame_tx, stop)?;
+        Ok(Self { backend })
     }
 
-    fn detect(tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Box<dyn CaptureBackend> {
+    fn detect(tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Result<Box<dyn CaptureBackend>> {
         // 1. wlr-screencopy (niri, sway, wlroots DEs)
         if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("WAYLAND_SOCKET").is_ok() {
             match wlr::WlrCapture::probe() {
                 Ok(probe) => {
                     eprintln!("Capture: wlr-screencopy (DMA-BUF preferred)");
-                    return Box::new(wlr::WlrCapture::new(probe, tx, stop));
+                    return Ok(Box::new(wlr::WlrCapture::new(probe, tx, stop)));
                 }
                 Err(e) => eprintln!("wlr-screencopy: {e}"),
             }
@@ -46,14 +46,17 @@ impl ScreenCapture {
         #[cfg(feature = "pipewire_capture")]
         {
             eprintln!("Capture: PipeWire (portal)");
-            return Box::new(pipewire::PipeWireCapture::new(tx, stop));
+            return Ok(Box::new(pipewire::PipeWireCapture::new(tx, stop)));
         }
 
         #[cfg(not(feature = "pipewire_capture"))]
-        panic!(
-            "Немає доступного бекенду захоплення.\n\
-             Wayland + wlr-screencopy потрібні, або скомпілюйте з --features pipewire_capture"
-        );
+        {
+            eprintln!(
+                "Немає доступного бекенду захоплення.\n\
+                 Wayland + wlr-screencopy потрібні, або скомпілюйте з --features pipewire_capture"
+            );
+            Err(crate::error::Error::NoBackend)
+        }
     }
 
     pub fn run(self, frame_duration: Duration) -> Result<()> {

@@ -203,6 +203,20 @@
   let pc = null;
   let dataChannel = null;
   let ws = null;
+  let currentSession = null; // echoed back to the server so it can tell a
+                              // stale (abandoned) negotiation attempt apart
+                              // from the current one after a reconnect
+  let ackPending = null; // { seq, remaining } for the tile batch currently being decoded
+
+  function maybeAck(entry) {
+    if (!entry) return;
+    entry.remaining -= 1;
+    if (entry.remaining <= 0 && dataChannel && dataChannel.readyState === 'open') {
+      const ack = new ArrayBuffer(4);
+      new DataView(ack).setUint32(0, entry.seq, true);
+      dataChannel.send(ack);
+    }
+  }
 
   async function connect() {
     resetStats();
@@ -227,6 +241,7 @@
           if (message.type === 'offer') {
             console.log('Received offer from server');
             statusText.textContent = 'Отримано offer, створюємо з\'єднання...';
+            currentSession = message.session;
 
             // Close stale connection on reconnect
             if (pc) {
@@ -251,7 +266,8 @@
               if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                   type: 'candidate',
-                  candidate: event.candidate.toJSON()
+                  candidate: event.candidate.toJSON(),
+                  session: currentSession
                 }));
               }
             };
@@ -282,12 +298,14 @@
                   return;
                 }
 
-                // Sequence control packet — send ACK back to server
+                // Sequence control packet — marks the start of a tile batch.
+                // The ACK is withheld until every tile in the batch has been
+                // successfully decoded (see maybeAck below), not sent here on
+                // marker receipt alone.
                 if (marker === 0xFFFE) {
                   const seq = view.getUint32(2, true);
-                  const ack = new ArrayBuffer(4);
-                  new DataView(ack).setUint32(0, seq, true);
-                  dataChannel.send(ack);
+                  const tileCount = view.getUint32(6, true);
+                  ackPending = { seq, remaining: tileCount };
                   return;
                 }
 
@@ -305,6 +323,7 @@
                   const w = tileView.getUint16(4, true);
                   const h = tileView.getUint16(6, true);
 
+                  const ackEntry = ackPending;
                   createImageBitmap(new Blob([tileData.slice(8)], { type: 'image/webp' }))
                     .then(bitmap => {
                       pending.push({ bitmap, x, y, w, h });
@@ -313,8 +332,12 @@
                       const decodeTime = performance.now() - receiveTime;
                       latencySum += decodeTime;
                       latencyCount++;
+                      maybeAck(ackEntry);
                     })
                     .catch(e => console.error('WebP decode failed:', e));
+                    // Deliberately not ack'd on decode failure: withholding the
+                    // ACK lets the server's ack_timeout classify this tile as
+                    // stale and resend it.
 
                   tileCount++;
                   totalBytes += tileLen;
@@ -377,7 +400,8 @@
             if (ws && ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({
                 type: 'answer',
-                sdp: pc.localDescription.sdp
+                sdp: pc.localDescription.sdp,
+                session: currentSession
               }));
             }
           } else if (message.type === 'candidate' && pc) {

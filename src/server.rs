@@ -52,12 +52,16 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
         }
     });
 
+    let mut session: u64 = 0;
+
     loop {
         // Check if the WebSocket sender task is still running before trying to reconnect
         if ws_tx.is_closed() {
             println!("WebSocket closed, stopping");
             break;
         }
+
+        session += 1;
 
         let (webrtc_conn, ice_channel) = match WebRTCConnection::new().await {
             Ok(x) => x,
@@ -70,7 +74,7 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
         };
 
         let signaling = SignalingChannel::new(ws_tx.clone(), ice_channel.ice_rx);
-        if signaling.send_offer_and_start_forwarding(offer_sdp).await.is_err() {
+        if signaling.send_offer_and_start_forwarding(offer_sdp, session).await.is_err() {
             eprintln!("Failed to send offer — WebSocket likely closed");
             break;
         }
@@ -81,6 +85,7 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
             &mut ws_receiver,
             Arc::clone(&webrtc_conn.peer_connection),
             30,
+            session,
         ).await.unwrap_or(false);
 
         if !answer_received {
@@ -99,7 +104,10 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
         let frame_duration = config.frame_duration();
 
         let capture_thread = std::thread::spawn(move || {
-            let capture = ScreenCapture::new(frame_tx, stop_capture);
+            let capture = match ScreenCapture::new(frame_tx, stop_capture) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("Capture setup failed: {e}"); return; }
+            };
             if let Err(e) = capture.run(frame_duration) {
                 eprintln!("Capture error: {e}");
             }
@@ -112,7 +120,16 @@ async fn handle_websocket_connection(stream: TcpStream, config: Config) -> Resul
         }
 
         stop.store(true, Ordering::Relaxed);
-        let _ = capture_thread.join();
+        // Run the blocking join on a dedicated blocking-pool thread, with a
+        // timeout, so a wedged capture backend can't stall this Tokio worker
+        // (and the other connections' tasks scheduled onto it) indefinitely.
+        let join_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || capture_thread.join()),
+        ).await;
+        if join_result.is_err() {
+            eprintln!("Capture thread did not stop within 5s, abandoning it");
+        }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }

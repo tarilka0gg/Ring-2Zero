@@ -10,6 +10,8 @@ pub enum Error {
     Io(std::io::Error),
     DmaBuf(String),
     PipeWire(String),
+    ConsumerDisconnected,
+    NoBackend,
 }
 
 impl fmt::Display for Error {
@@ -23,6 +25,8 @@ impl fmt::Display for Error {
             Self::Io(e) => write!(f, "IO: {e}"),
             Self::DmaBuf(e) => write!(f, "DMA-BUF: {e}"),
             Self::PipeWire(e) => write!(f, "PipeWire: {e}"),
+            Self::ConsumerDisconnected => write!(f, "приймач кадрів відключився"),
+            Self::NoBackend => write!(f, "немає доступного бекенду захоплення"),
         }
     }
 }

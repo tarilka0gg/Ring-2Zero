@@ -79,17 +79,21 @@ impl CaptureBackend for PipeWireCapture {
         });
         let state_ptr = Box::into_raw(state);
 
-        // Map our Arc<AtomicBool> to a C volatile int
-        let stop_int = AtomicI32::new(0);
-        let stop_ref = &stop_int as *const AtomicI32 as *const libc::c_int;
+        // Map our Arc<AtomicBool> to a C volatile int. The AtomicI32 must live
+        // behind an Arc so its address stays valid after `stop_int` is moved
+        // into the watcher thread's closure below — taking `&stop_int` before
+        // the move would point at a stack slot the closure no longer uses.
+        let stop_int = Arc::new(AtomicI32::new(0));
+        let stop_ref = Arc::as_ptr(&stop_int) as *const libc::c_int;
 
         // Watcher thread: sets stop_int when stop flag fires
         let stop_clone = Arc::clone(&self.stop);
+        let stop_int_clone = Arc::clone(&stop_int);
         let watcher = std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
                 if stop_clone.load(Ordering::Relaxed) {
-                    stop_int.store(1, Ordering::SeqCst);
+                    stop_int_clone.store(1, Ordering::SeqCst);
                     break;
                 }
             }
@@ -108,7 +112,15 @@ impl CaptureBackend for PipeWireCapture {
 
         // Reclaim the state Box
         let _ = unsafe { Box::from_raw(state_ptr) };
-        let _ = watcher.join();
+
+        // Don't join the watcher here: pw_capture_start() has already
+        // returned (success or failure), but the watcher only wakes up when
+        // the *external* stop flag is set (on client disconnect), which may
+        // be arbitrarily far in the future relative to this point. Blocking
+        // on it here would hang this thread even though the capture session
+        // is already over. It's a lightweight 50ms-poll loop that exits on
+        // its own once the external stop flag fires.
+        drop(watcher);
 
         if ret < 0 {
             let msg = unsafe { std::ffi::CStr::from_ptr(err_buf.as_ptr()) }
