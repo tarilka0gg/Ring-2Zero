@@ -252,7 +252,6 @@ struct DmaBuf {
     wl_buf: wl_buffer::WlBuffer,
     ptr: *const u8,
     size: usize,
-    stride: u32,
     pub width: u32,
     pub height: u32,
     pub drm_format: u32,
@@ -317,7 +316,7 @@ impl DmaBuf {
         Some(Self {
             bo_ptr, wl_buf,
             ptr: ptr as *const u8,
-            size, stride, width, height, drm_format,
+            size, width, height, drm_format,
         })
     }
 
