@@ -58,6 +58,9 @@ mod gbm_ffi {
 
 struct GbmDevice {
     ptr: *mut gbm_ffi::GbmDevice,
+    // gbm_create_device() stores this fd internally without dup'ing it, so the
+    // File must stay open for as long as the device is alive.
+    _file: std::fs::File,
 }
 
 impl Drop for GbmDevice {
@@ -67,11 +70,11 @@ impl Drop for GbmDevice {
 }
 
 impl GbmDevice {
-    fn try_open(path: &str) -> Option<(Self, std::fs::File)> {
+    fn try_open(path: &str) -> Option<Self> {
         let file = std::fs::OpenOptions::new().read(true).write(true).open(path).ok()?;
         let ptr = unsafe { gbm_ffi::gbm_create_device(file.as_raw_fd()) };
         if ptr.is_null() { return None; }
-        Some((GbmDevice { ptr }, file))
+        Some(GbmDevice { ptr, _file: file })
     }
 }
 
@@ -351,12 +354,12 @@ fn to_rgba(data: &[u8], fmt: u32, w: u32, h: u32, dst: &mut Vec<u8>) {
 
 // ─── GBM device discovery ──────────────────────────────────────────────────
 
-fn open_gbm() -> Option<(GbmDevice, std::fs::File)> {
+fn open_gbm() -> Option<GbmDevice> {
     for n in 128u32..=135 {
         let path = format!("/dev/dri/renderD{n}");
-        if let Some(pair) = GbmDevice::try_open(&path) {
+        if let Some(dev) = GbmDevice::try_open(&path) {
             eprintln!("DMA-BUF: render node {path}");
-            return Some(pair);
+            return Some(dev);
         }
     }
     None
@@ -396,8 +399,24 @@ impl WlrCapture {
 fn send_frame(tx: &mpsc::SyncSender<Frame>, frame: Frame) -> Result<()> {
     match tx.try_send(frame) {
         Ok(()) | Err(mpsc::TrySendError::Full(_)) => Ok(()),
-        Err(mpsc::TrySendError::Disconnected(_)) => Ok(()),
+        Err(mpsc::TrySendError::Disconnected(_)) => Err(Error::ConsumerDisconnected),
     }
+}
+
+// Wait for a capture_output() request's buffer hints (Buffer/LinuxDmabuf/BufferDone,
+// or Failed). Shared between the initial capture and the DMA-rejection recapture below.
+fn wait_for_buffer_hint(
+    eq: &mut wayland_client::EventQueue<WlrState>,
+    state: &mut WlrState,
+) -> Result<()> {
+    loop {
+        eq.blocking_dispatch(state).map_err(|e| Error::Wayland(e.to_string()))?;
+        let fi = &state.frame_info;
+        if fi.failed || fi.buffer_done { break; }
+        // v1/v2 fallback: no buffer_done, just Buffer event
+        if fi.got_shm && state.linux_dmabuf.is_none() { break; }
+    }
+    Ok(())
 }
 
 impl CaptureBackend for WlrCapture {
@@ -418,13 +437,10 @@ impl CaptureBackend for WlrCapture {
         let output = state.output.take().ok_or(Error::NoOutput)?;
         let manager = state.screencopy_manager.take().ok_or(Error::NoScreencopyManager)?;
 
-        let gbm_pair = if state.linux_dmabuf.is_some() { open_gbm() } else { None };
-        if gbm_pair.is_none() && state.linux_dmabuf.is_some() {
+        let gbm = if state.linux_dmabuf.is_some() { open_gbm() } else { None };
+        if gbm.is_none() && state.linux_dmabuf.is_some() {
             eprintln!("DMA-BUF: GBM недоступний → SHM");
         }
-        let gbm = gbm_pair.map(|(dev, _f)| dev); // keep _f alive? No — dev holds the fd copy
-        // Actually: GBM device needs the drm fd open. Let's keep both:
-        // Reopen with the stored device which already holds the fd internally via C side.
 
         let mut shm_buf: Option<ShmCapBuf> = None;
         let mut dma_buf: Option<DmaBuf> = None;
@@ -435,21 +451,13 @@ impl CaptureBackend for WlrCapture {
             if stop.load(Ordering::Relaxed) { break; }
 
             state.reset_frame();
-            let frame = manager.capture_output(1, &output, &qh, ());
+            let mut frame = manager.capture_output(1, &output, &qh, ());
             eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
-
-            // Wait for buffer hints. v3: wait for buffer_done. v1/v2: got_shm is enough.
-            loop {
-                eq.blocking_dispatch(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
-                let fi = &state.frame_info;
-                if fi.failed || fi.buffer_done { break; }
-                // v1/v2 fallback: no buffer_done, just Buffer event
-                if fi.got_shm && state.linux_dmabuf.is_none() { break; }
-            }
+            wait_for_buffer_hint(&mut eq, &mut state)?;
 
             if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
 
-            let damage = state.frame_info.damage.clone();
+            let mut damage = state.frame_info.damage.clone();
             let fi = &state.frame_info;
 
             let try_dma = gbm.is_some()
@@ -479,15 +487,29 @@ impl CaptureBackend for WlrCapture {
                     if state.frame_info.ready {
                         let db = dma_buf.as_ref().unwrap();
                         to_rgba(db.data(), db.drm_format, db.width, db.height, &mut rgba_buf);
+                        frame.destroy();
                         send_frame(&tx,Frame::new(std::mem::take(&mut rgba_buf), db.width, db.height, damage))?;
                         let e = tick.elapsed();
                         if e < frame_duration { std::thread::sleep(frame_duration - e); }
                         continue;
                     }
 
-                    eprintln!("DMA-BUF: compositor відхилив → SHM fallback");
+                    // Per wlr-screencopy protocol, `failed` terminates this
+                    // frame object ("After receiving this event, the client
+                    // should destroy the object") — it cannot be reused for
+                    // a second copy() call, so a genuine SHM fallback needs
+                    // a fresh capture_output() rather than reusing `frame`.
+                    eprintln!("DMA-BUF: compositor відхилив → SHM fallback (перезахоплення)");
+                    frame.destroy();
                     dma_buf = None;
+
                     state.reset_frame();
+                    frame = manager.capture_output(1, &output, &qh, ());
+                    eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
+                    wait_for_buffer_hint(&mut eq, &mut state)?;
+
+                    if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
+                    damage = state.frame_info.damage.clone();
                 }
             }
 
@@ -506,10 +528,11 @@ impl CaptureBackend for WlrCapture {
             while !state.frame_info.ready && !state.frame_info.failed {
                 eq.blocking_dispatch(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
             }
-            if state.frame_info.failed { return Err(Error::FrameFailed); }
+            if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
 
             let sb = shm_buf.as_ref().unwrap();
             convert_bgrx_to_rgba_inplace(sb.data(), sb.width, sb.height, &mut rgba_buf);
+            frame.destroy();
             send_frame(&tx,Frame::new(std::mem::take(&mut rgba_buf), sb.width, sb.height, damage))?;
 
             let e = tick.elapsed();

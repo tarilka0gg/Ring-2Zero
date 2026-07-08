@@ -359,12 +359,16 @@ impl StreamServer {
             }
 
             if !tiles.is_empty() {
-                // Send sequence control packet: 0xFFFE (u16) | seq (u32) = 6 bytes
+                // Send sequence control packet: 0xFFFE (u16) | seq (u32) | tile_count (u32) = 10 bytes.
+                // tile_count lets the client withhold its ACK until it has actually
+                // decoded every tile in this batch, instead of ACKing on marker
+                // receipt alone (which never let the ACK system detect a real loss).
                 frame_seq = frame_seq.wrapping_add(1);
                 let seq = frame_seq;
-                let mut seq_pkt = [0u8; 6];
+                let mut seq_pkt = [0u8; 10];
                 seq_pkt[0..2].copy_from_slice(&0xFFFEu16.to_le_bytes());
                 seq_pkt[2..6].copy_from_slice(&seq.to_le_bytes());
+                seq_pkt[6..10].copy_from_slice(&(tiles.len() as u32).to_le_bytes());
                 data_channel.send(&Bytes::copy_from_slice(&seq_pkt)).await?;
 
                 pending_acks.insert(seq, (Instant::now(), tile_indices));

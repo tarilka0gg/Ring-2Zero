@@ -98,7 +98,9 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
         ctx->width   = info.info.raw.size.width;
         ctx->height  = info.info.raw.size.height;
         ctx->spa_fmt = info.info.raw.format;
-        /* stride = width * bytes_per_pixel; assume 4 for all RGBA variants */
+        /* Provisional stride; on_process() overrides this with the real
+         * per-buffer chunk->stride once actual frames start arriving, since
+         * the compositor/GPU may pad rows beyond width*4. */
         ctx->stride  = ctx->width * 4;
     }
 }
@@ -119,9 +121,12 @@ static void on_process(void *data)
     struct spa_data   *d      = &spabuf->datas[0];
 
     if (d->data && d->chunk && d->chunk->size > 0 && ctx->on_frame) {
+        /* Use the real per-buffer stride when PipeWire reports one; padded
+         * rows (common on GPU-backed buffers) make width*4 wrong. */
+        uint32_t stride = d->chunk->stride > 0 ? (uint32_t)d->chunk->stride : ctx->stride;
         ctx->on_frame(
             (const uint8_t *)d->data,
-            ctx->width, ctx->height, ctx->stride,
+            ctx->width, ctx->height, stride,
             ctx->spa_fmt,
             ctx->user_data
         );

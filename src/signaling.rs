@@ -23,11 +23,14 @@ impl SignalingChannel {
         Self { ws_tx, ice_rx }
     }
 
-    /// Send offer through WebSocket, then start forwarding ICE candidates
-    pub async fn send_offer_and_start_forwarding(mut self, sdp: String) -> Result<()> {
+    /// Send offer through WebSocket, then start forwarding ICE candidates.
+    /// `session` tags this negotiation attempt so late-arriving answer/candidate
+    /// messages from an abandoned attempt can be told apart from the current one.
+    pub async fn send_offer_and_start_forwarding(mut self, sdp: String, session: u64) -> Result<()> {
         let offer_json = serde_json::json!({
             "type": "offer",
-            "sdp": sdp
+            "sdp": sdp,
+            "session": session
         });
         self.ws_tx.send(Message::Text(offer_json.to_string())).await
             .map_err(|_| Error::WebRTC("Failed to send offer (channel full or closed)".into()))?;
@@ -44,7 +47,8 @@ impl SignalingChannel {
                 };
                 let candidate_json = serde_json::json!({
                     "type": "candidate",
-                    "candidate": candidate_str
+                    "candidate": candidate_str,
+                    "session": session
                 });
                 if self.ws_tx.send(Message::Text(candidate_json.to_string())).await.is_err() {
                     eprintln!("Failed to send ICE candidate (channel full or closed)");
@@ -58,11 +62,17 @@ impl SignalingChannel {
     }
 }
 
-/// Wait for answer from client via WebSocket
+/// Wait for answer from client via WebSocket.
+/// `session` is the current negotiation attempt's id (see
+/// `SignalingChannel::send_offer_and_start_forwarding`); answer/candidate
+/// messages tagged with a different (stale) session are ignored, since the
+/// same `ws_receiver` is reused across reconnect attempts and a late message
+/// from an abandoned attempt must not be applied to this `peer_connection`.
 pub async fn wait_for_answer(
     ws_receiver: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>>,
     peer_connection: Arc<RTCPeerConnection>,
     timeout_secs: u64,
+    session: u64,
 ) -> Result<bool> {
     let timeout = tokio::time::Duration::from_secs(timeout_secs);
     let deadline = tokio::time::Instant::now() + timeout;
@@ -73,6 +83,11 @@ pub async fn wait_for_answer(
                 match msg_result {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                            let msg_session = json.get("session").and_then(|v| v.as_u64());
+                            if msg_session != Some(session) {
+                                println!("Ignoring stale signaling message from session {:?} (current: {session})", msg_session);
+                                continue;
+                            }
                             if json.get("type").and_then(|v| v.as_str()) == Some("answer") {
                                 if let Some(sdp) = json.get("sdp").and_then(|v| v.as_str()) {
                                     println!("Got answer");
