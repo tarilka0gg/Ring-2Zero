@@ -74,15 +74,18 @@ async fn main() -> Result<()> {
 
     // Quick bandwidth-constrained testing knob: RING2ZERO_MAX_FPS=5 caps
     // target/static/dynamic tile FPS uniformly, without touching the
-    // adaptive-quality machinery.
+    // adaptive-quality machinery. Clamped to 1000: Config::frame_duration()
+    // is `1000 / fps` in whole milliseconds, so anything above 1000 would
+    // truncate to a 0ms duration — turning the cap into an uncapped
+    // busy-loop instead of throttling anything.
     if let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") {
         if let Ok(fps) = fps_str.parse::<u64>() {
-            if let Some(nz) = std::num::NonZeroU64::new(fps) {
-                config.target_fps = nz;
-                config.static_tile_fps = nz;
-                config.dynamic_tile_fps = nz;
-                println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
-            }
+            let fps = fps.clamp(1, 1000);
+            let nz = std::num::NonZeroU64::new(fps).unwrap();
+            config.target_fps = nz;
+            config.static_tile_fps = nz;
+            config.dynamic_tile_fps = nz;
+            println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
         }
     }
 
@@ -103,7 +106,7 @@ async fn main() -> Result<()> {
         println!("TLS disabled — set RING2ZERO_TLS_CERT/RING2ZERO_TLS_KEY for wss:// (required for Safari/iOS remote access)");
     }
     println!("Auth token: {}", config.auth_token);
-    println!("Connect clients with: client.html?server=<host>:{}&token={}", config.ws_port, config.auth_token);
+    println!("Connect clients with: client.html?server=<host>:{} (password prompt uses the token above)", config.ws_port);
     println!("Target FPS: {}", config.target_fps.get());
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());

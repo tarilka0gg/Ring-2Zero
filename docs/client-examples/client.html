@@ -292,10 +292,12 @@
   }
 
   // Server address override: open this page as client.html?server=100.x.x.x:9001
-  // to connect to a different host. Defaults to this deployment's fixed address
-  // so the plain URL (no query params at all) works as a bookmarkable link.
+  // to connect to a different host. Defaults to localhost so the plain URL
+  // (no query params at all) works out of the box for local/same-machine
+  // use; a remote deployment should bookmark the URL with ?server= set to
+  // its own Tailscale hostname (or edit this default for its own copy).
   const pageParams = new URLSearchParams(location.search);
-  const wsHost = pageParams.get('server') || 'ring2zero.tail2ef003.ts.net:9001';
+  const wsHost = pageParams.get('server') || 'localhost:9001';
   // Match the page's own scheme: a page loaded over https must use wss (Safari
   // blocks ws:// as mixed content from a secure page, and requires https for
   // WebRTC to work at all).
