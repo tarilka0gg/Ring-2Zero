@@ -244,6 +244,13 @@
     requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
   });
 
+  // Stringifies an error/rejection value for display: prefer `.message` when
+  // present, otherwise fall back to a safe String() conversion (handles
+  // non-Error rejections, e.g. a bare DOMException without .message).
+  function errMsg(e) {
+    return e && e.message ? e.message : String(e);
+  }
+
   // Статистика
   let tileCount     = 0;
   let totalBytes    = 0;
@@ -252,11 +259,16 @@
   let latencyCount  = 0;
 
   function resetStats() {
-    tileCount     = 0;
-    totalBytes    = 0;
-    lastStatTime  = Date.now();
-    latencySum    = 0;
-    latencyCount  = 0;
+    tileCount      = 0;
+    totalBytes     = 0;
+    lastStatTime   = Date.now();
+    latencySum     = 0;
+    latencyCount   = 0;
+    decodeOkCount   = 0;
+    decodeFailCount = 0;
+    msgCount        = 0;
+    ackMsgCount     = 0;
+    tileMsgCount    = 0;
   }
 
   // WebRTC з мінімальною латентністю
@@ -473,7 +485,7 @@
                     .catch(e => {
                       decodeFailCount++;
                       console.error('WebP decode failed:', e);
-                      statusText.textContent = `Decode fail ${decodeFailCount}/${decodeFailCount + decodeOkCount}: ${e && e.message ? e.message : e}`;
+                      statusText.textContent = `Decode fail ${decodeFailCount}/${decodeFailCount + decodeOkCount}: ${errMsg(e)}`;
                     });
                     // Deliberately not ack'd on decode failure: withholding the
                     // ACK lets the server's ack_timeout classify this tile as
@@ -555,7 +567,7 @@
           }
         } catch (err) {
           console.error('Message handling error:', err);
-          statusText.textContent = 'Помилка: ' + (err && err.message ? err.message : String(err));
+          statusText.textContent = 'Помилка: ' + errMsg(err);
         }
       };
 
@@ -593,7 +605,7 @@
     } catch (err) {
       console.error('Connection failed:', err);
       statusDot.className = 'error';
-      statusText.textContent = 'Не вдалося підключитися: ' + (err && err.message ? err.message : String(err));
+      statusText.textContent = 'Не вдалося підключитися: ' + errMsg(err);
     }
   }
 

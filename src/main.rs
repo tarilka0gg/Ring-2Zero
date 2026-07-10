@@ -10,32 +10,33 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tokio_rustls::TlsAcceptor;
 
-/// Loads a TLS acceptor from RING2ZERO_TLS_CERT / RING2ZERO_TLS_KEY (PEM files),
-/// e.g. from `tailscale cert`. Safari requires a secure context for WebRTC, so
-/// remote/Safari clients need `wss://` — this is what makes that possible.
+/// Loads a TLS acceptor from the cert/key PEM file paths in `Config`
+/// (`RING2ZERO_TLS_CERT` / `RING2ZERO_TLS_KEY`, e.g. from `tailscale cert`).
+/// Safari requires a secure context for WebRTC, so remote/Safari clients
+/// need `wss://` — this is what makes that possible.
 ///
-/// Returns `Ok(None)` when neither env var is set (TLS simply not requested).
+/// Returns `Ok(None)` when neither path is set (TLS simply not requested).
 /// Returns `Err` when TLS was requested but the cert/key couldn't be loaded —
 /// the caller should fail startup on this rather than silently falling back
 /// to plaintext, since a cert that's rotated out from under a running
 /// deployment (or a typo'd path) should be loud, not a silent downgrade to
 /// `ws://`.
-fn load_tls_acceptor() -> std::result::Result<Option<TlsAcceptor>, String> {
-    let cert_path = match std::env::var("RING2ZERO_TLS_CERT") {
-        Ok(p) => p,
-        Err(_) => return Ok(None),
-    };
-    let key_path = std::env::var("RING2ZERO_TLS_KEY")
-        .map_err(|_| "RING2ZERO_TLS_CERT is set but RING2ZERO_TLS_KEY is not".to_string())?;
+fn load_tls_acceptor(
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+) -> std::result::Result<Option<TlsAcceptor>, String> {
+    let Some(cert_path) = cert_path else { return Ok(None) };
+    let key_path = key_path
+        .ok_or_else(|| "RING2ZERO_TLS_CERT is set but RING2ZERO_TLS_KEY is not".to_string())?;
 
-    let cert_file = std::fs::File::open(&cert_path)
+    let cert_file = std::fs::File::open(cert_path)
         .map_err(|e| format!("Cannot open RING2ZERO_TLS_CERT ({cert_path}): {e}"))?;
     let mut cert_reader = std::io::BufReader::new(cert_file);
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to parse RING2ZERO_TLS_CERT: {e}"))?;
 
-    let key_file = std::fs::File::open(&key_path)
+    let key_file = std::fs::File::open(key_path)
         .map_err(|e| format!("Cannot open RING2ZERO_TLS_KEY ({key_path}): {e}"))?;
     let mut key_reader = std::io::BufReader::new(key_file);
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
@@ -72,27 +73,10 @@ async fn main() -> Result<()> {
         println!("[DEBUG MODE ENABLED]");
     }
 
-    // Quick bandwidth-constrained testing knob: RING2ZERO_MAX_FPS=5 caps
-    // target/static/dynamic tile FPS uniformly, without touching the
-    // adaptive-quality machinery. Clamped to 1000: Config::frame_duration()
-    // is `1000 / fps` in whole milliseconds, so anything above 1000 would
-    // truncate to a 0ms duration — turning the cap into an uncapped
-    // busy-loop instead of throttling anything.
-    if let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") {
-        if let Ok(fps) = fps_str.parse::<u64>() {
-            let fps = fps.clamp(1, 1000);
-            let nz = std::num::NonZeroU64::new(fps).unwrap();
-            config.target_fps = nz;
-            config.static_tile_fps = nz;
-            config.dynamic_tile_fps = nz;
-            println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
-        }
-    }
-
     let addr = format!("0.0.0.0:{}", config.ws_port);
     let listener = TcpListener::bind(&addr).await?;
 
-    let tls_acceptor = match load_tls_acceptor() {
+    let tls_acceptor = match load_tls_acceptor(config.tls_cert_path.as_deref(), config.tls_key_path.as_deref()) {
         Ok(acceptor) => acceptor,
         Err(e) => {
             eprintln!("TLS setup failed: {e}");

@@ -101,7 +101,7 @@ where
 
         session += 1;
 
-        let (webrtc_conn, ice_channel) = match WebRTCConnection::new().await {
+        let (webrtc_conn, ice_channel) = match WebRTCConnection::new(&config).await {
             Ok(x) => x,
             Err(e) => { eprintln!("WebRTC init failed: {e}"); break; }
         };
