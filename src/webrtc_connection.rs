@@ -1,6 +1,7 @@
 // WebRTC Connection Management Module
 // Handles PeerConnection creation, configuration, and DataChannel setup
 
+use crate::config::Config;
 use crate::error::{Result, Error};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -27,7 +28,7 @@ pub struct IceChannel {
 impl WebRTCConnection {
     /// Create a new WebRTC connection with low-latency settings
     /// Returns (connection, ice_channel)
-    pub async fn new() -> Result<(Self, IceChannel)> {
+    pub async fn new(config: &Config) -> Result<(Self, IceChannel)> {
         let m = MediaEngine::default();
         let mut s = webrtc::api::setting_engine::SettingEngine::default();
 
@@ -47,7 +48,7 @@ impl WebRTCConnection {
         // unconditional: a deployment reachable only over IPv6 (some
         // CGNAT/VPN topologies) would otherwise gather zero usable
         // candidates and fail outright. Set RING2ZERO_IPV4_ONLY=1 to enable.
-        if std::env::var("RING2ZERO_IPV4_ONLY").is_ok() {
+        if config.ice_ipv4_only {
             s.set_ip_filter(Box::new(|ip: std::net::IpAddr| ip.is_ipv4()));
         }
 
@@ -55,7 +56,7 @@ impl WebRTCConnection {
         // interface (e.g. RING2ZERO_ICE_INTERFACE=tailscale0), so a machine
         // with multiple interfaces (LAN + VPN) doesn't advertise a LAN
         // candidate the remote peer can't actually reach.
-        if let Ok(iface) = std::env::var("RING2ZERO_ICE_INTERFACE") {
+        if let Some(iface) = config.ice_interface.clone() {
             s.set_interface_filter(Box::new(move |name: &str| name == iface));
         }
 
@@ -111,25 +112,18 @@ impl WebRTCConnection {
             })
         }));
 
-        {
-            let pc = Arc::clone(&peer_connection);
-            tokio::spawn(async move {
-                let dtls_transport = pc.sctp().transport();
-                let ice_transport = dtls_transport.ice_transport();
-                let mut last: Option<String> = None;
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    if pc.connection_state() == RTCPeerConnectionState::Closed { break; }
-                    if let Some(pair) = ice_transport.get_selected_candidate_pair().await {
-                        let s = format!("{:?}", pair);
-                        if Some(&s) != last.as_ref() {
-                            println!("Selected candidate pair: {s}");
-                            last = Some(s);
-                        }
-                    }
-                }
-            });
-        }
+        // Log the selected ICE candidate pair whenever it changes, via the
+        // ICE transport's own change event — same event-driven pattern as
+        // the on_ice_connection_state_change/on_peer_connection_state_change
+        // callbacks above, instead of a hand-rolled poll-and-diff loop.
+        peer_connection
+            .sctp()
+            .transport()
+            .ice_transport()
+            .on_selected_candidate_pair_change(Box::new(|pair| {
+                println!("Selected candidate pair: {pair}");
+                Box::pin(async {})
+            }));
 
         // Create DataChannel: unordered (avoid head-of-line blocking latency)
         // but reliable (SCTP retransmits lost fragments). A tile message is

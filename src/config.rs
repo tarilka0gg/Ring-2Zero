@@ -26,11 +26,23 @@ pub struct Config {
     pub dynamic_tile_fps: std::num::NonZeroU64,
     pub debug_mode: bool,
     pub auth_token: String,
+    /// RING2ZERO_TLS_CERT / RING2ZERO_TLS_KEY — PEM file paths for wss://.
+    /// Presence only; main.rs is responsible for actually loading them.
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
+    /// RING2ZERO_ICE_INTERFACE — restrict ICE host-candidate gathering to a
+    /// single named interface (e.g. `tailscale0`) on multi-homed machines.
+    pub ice_interface: Option<String>,
+    /// RING2ZERO_IPV4_ONLY — exclude IPv6 ICE candidates. Opt-in: works
+    /// around a dual-stack candidate-selection issue on some hosts, but
+    /// would break connectivity outright on an IPv6-only path if it were
+    /// unconditional.
+    pub ice_ipv4_only: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             ws_port: 9001,
             target_fps: std::num::NonZeroU64::new(60).unwrap(),
             tiles_x: 20,
@@ -45,7 +57,13 @@ impl Default for Config {
             dynamic_tile_fps: std::num::NonZeroU64::new(60).unwrap(),
             debug_mode: false,
             auth_token: Self::load_or_generate_token(),
-        }
+            tls_cert_path: std::env::var("RING2ZERO_TLS_CERT").ok(),
+            tls_key_path: std::env::var("RING2ZERO_TLS_KEY").ok(),
+            ice_interface: std::env::var("RING2ZERO_ICE_INTERFACE").ok(),
+            ice_ipv4_only: std::env::var("RING2ZERO_IPV4_ONLY").is_ok(),
+        };
+        config.apply_max_fps_override();
+        config
     }
 }
 
@@ -58,6 +76,23 @@ impl Config {
             Ok(t) if !t.is_empty() => t,
             _ => Self::generate_random_token(),
         }
+    }
+
+    /// RING2ZERO_MAX_FPS=N caps target/static/dynamic tile FPS uniformly —
+    /// a quick bandwidth-constrained testing knob, without touching the
+    /// adaptive-quality machinery. Clamped to 1000: frame_duration() is
+    /// `1000 / fps` in whole milliseconds, so anything above 1000 would
+    /// truncate to a 0ms duration, turning the cap into an uncapped
+    /// busy-loop instead of throttling anything.
+    fn apply_max_fps_override(&mut self) {
+        let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") else { return };
+        let Ok(fps) = fps_str.parse::<u64>() else { return };
+        let fps = fps.clamp(1, 1000);
+        let nz = std::num::NonZeroU64::new(fps).unwrap();
+        self.target_fps = nz;
+        self.static_tile_fps = nz;
+        self.dynamic_tile_fps = nz;
+        println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
     }
 
     fn generate_random_token() -> String {
