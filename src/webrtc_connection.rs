@@ -38,13 +38,18 @@ impl WebRTCConnection {
         // silently unusable and ICE can never find a working pair.
         s.set_ice_multicast_dns_mode(webrtc_ice::mdns::MulticastDnsMode::QueryOnly);
 
-        // IPv4 only: a dual-stack host (e.g. a Tailscale interface also
-        // offering an IPv6 ULA address alongside its IPv4 one) makes ICE
-        // gather multiple host candidates for the *same* logical path.
-        // Without STUN priority tie-breaking, the wrong one can get selected
-        // first, and if that path is actually flaky it can leave the
-        // connection stuck/flapping instead of falling back cleanly.
-        s.set_ip_filter(Box::new(|ip: std::net::IpAddr| ip.is_ipv4()));
+        // IPv4 only, opt-in: on a dual-stack host (e.g. a Tailscale interface
+        // also offering an IPv6 ULA address alongside its IPv4 one), ICE can
+        // gather multiple host candidates for the *same* logical path, and
+        // without STUN priority tie-breaking the wrong one can get selected
+        // first — if that path is actually flaky, the connection gets stuck
+        // instead of falling back cleanly. This must stay opt-in rather than
+        // unconditional: a deployment reachable only over IPv6 (some
+        // CGNAT/VPN topologies) would otherwise gather zero usable
+        // candidates and fail outright. Set RING2ZERO_IPV4_ONLY=1 to enable.
+        if std::env::var("RING2ZERO_IPV4_ONLY").is_ok() {
+            s.set_ip_filter(Box::new(|ip: std::net::IpAddr| ip.is_ipv4()));
+        }
 
         // Optionally restrict ICE host-candidate gathering to a single named
         // interface (e.g. RING2ZERO_ICE_INTERFACE=tailscale0), so a machine
@@ -137,6 +142,7 @@ impl WebRTCConnection {
         // the app-level ACK/stale-tile system still handles the remaining
         // rare loss/staleness cases.
         let dc_init = RTCDataChannelInit {
+            ordered: Some(false),
             ..Default::default()
         };
 
@@ -208,5 +214,24 @@ impl WebRTCConnection {
                 Ok(false)
             }
         }
+    }
+}
+
+impl Drop for WebRTCConnection {
+    /// `RTCPeerConnection` has no cleanup-on-drop of its own — its internal
+    /// ICE agent, DTLS/SCTP transports and sockets are only released by an
+    /// explicit `close()`. Without this, every reconnect (this server's
+    /// whole reason for existing) would leak the previous session's
+    /// connection object graph, and the candidate-pair monitor task above
+    /// would never observe `RTCPeerConnectionState::Closed` and would spin
+    /// forever. `close()` is async, so it's spawned as its own short-lived
+    /// task rather than run here.
+    fn drop(&mut self) {
+        let pc = Arc::clone(&self.peer_connection);
+        tokio::spawn(async move {
+            if let Err(e) = pc.close().await {
+                eprintln!("Failed to close peer connection: {e}");
+            }
+        });
     }
 }

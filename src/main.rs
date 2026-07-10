@@ -13,30 +13,41 @@ use tokio_rustls::TlsAcceptor;
 /// Loads a TLS acceptor from RING2ZERO_TLS_CERT / RING2ZERO_TLS_KEY (PEM files),
 /// e.g. from `tailscale cert`. Safari requires a secure context for WebRTC, so
 /// remote/Safari clients need `wss://` — this is what makes that possible.
-fn load_tls_acceptor() -> Option<TlsAcceptor> {
-    let cert_path = std::env::var("RING2ZERO_TLS_CERT").ok()?;
-    let key_path = std::env::var("RING2ZERO_TLS_KEY").ok()?;
+///
+/// Returns `Ok(None)` when neither env var is set (TLS simply not requested).
+/// Returns `Err` when TLS was requested but the cert/key couldn't be loaded —
+/// the caller should fail startup on this rather than silently falling back
+/// to plaintext, since a cert that's rotated out from under a running
+/// deployment (or a typo'd path) should be loud, not a silent downgrade to
+/// `ws://`.
+fn load_tls_acceptor() -> std::result::Result<Option<TlsAcceptor>, String> {
+    let cert_path = match std::env::var("RING2ZERO_TLS_CERT") {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    let key_path = std::env::var("RING2ZERO_TLS_KEY")
+        .map_err(|_| "RING2ZERO_TLS_CERT is set but RING2ZERO_TLS_KEY is not".to_string())?;
 
     let cert_file = std::fs::File::open(&cert_path)
-        .unwrap_or_else(|e| panic!("Cannot open RING2ZERO_TLS_CERT ({cert_path}): {e}"));
+        .map_err(|e| format!("Cannot open RING2ZERO_TLS_CERT ({cert_path}): {e}"))?;
     let mut cert_reader = std::io::BufReader::new(cert_file);
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .unwrap_or_else(|e| panic!("Failed to parse RING2ZERO_TLS_CERT: {e}"));
+        .map_err(|e| format!("Failed to parse RING2ZERO_TLS_CERT: {e}"))?;
 
     let key_file = std::fs::File::open(&key_path)
-        .unwrap_or_else(|e| panic!("Cannot open RING2ZERO_TLS_KEY ({key_path}): {e}"));
+        .map_err(|e| format!("Cannot open RING2ZERO_TLS_KEY ({key_path}): {e}"))?;
     let mut key_reader = std::io::BufReader::new(key_file);
     let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .unwrap_or_else(|e| panic!("Failed to parse RING2ZERO_TLS_KEY: {e}"))
-        .expect("RING2ZERO_TLS_KEY contains no private key");
+        .map_err(|e| format!("Failed to parse RING2ZERO_TLS_KEY: {e}"))?
+        .ok_or_else(|| "RING2ZERO_TLS_KEY contains no private key".to_string())?;
 
     let tls_config = RustlsServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .expect("Invalid TLS certificate/key pair");
+        .map_err(|e| format!("Invalid TLS certificate/key pair: {e}"))?;
 
-    Some(TlsAcceptor::from(Arc::new(tls_config)))
+    Ok(Some(TlsAcceptor::from(Arc::new(tls_config))))
 }
 
 #[tokio::main]
@@ -78,7 +89,13 @@ async fn main() -> Result<()> {
     let addr = format!("0.0.0.0:{}", config.ws_port);
     let listener = TcpListener::bind(&addr).await?;
 
-    let tls_acceptor = load_tls_acceptor();
+    let tls_acceptor = match load_tls_acceptor() {
+        Ok(acceptor) => acceptor,
+        Err(e) => {
+            eprintln!("TLS setup failed: {e}");
+            std::process::exit(1);
+        }
+    };
     let scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
 
     println!("WebRTC signaling server (WebSocket): {scheme}://{addr}");

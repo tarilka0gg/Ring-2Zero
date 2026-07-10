@@ -152,7 +152,7 @@ where
         });
 
         let server = StreamServer::new(config.clone());
-        match server.handle_client_async(webrtc_conn.data_channel, frame_rx).await {
+        match server.handle_client_async(Arc::clone(&webrtc_conn.data_channel), frame_rx).await {
             Ok(_) => println!("Stream ended normally, attempting reconnect..."),
             Err(e) => eprintln!("Stream error: {e}, attempting reconnect..."),
         }

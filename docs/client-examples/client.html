@@ -328,11 +328,20 @@
   }
 
   let lastAuthFailed = false;
+  // A close-before-open could mean a wrong token, but the WebSocket API
+  // doesn't expose the HTTP status code, so it's equally consistent with a
+  // transient network blip or a server restart. Only wipe a *cached*
+  // (previously working) token after it fails this many times in a row —
+  // a fresh, just-typed token is still treated as wrong on the first try,
+  // since that's genuinely its first use.
+  let cachedAuthFailCount = 0;
+  const MAX_CACHED_AUTH_RETRIES = 3;
 
   async function connect() {
     resetStats();
 
     let token = localStorage.getItem(TOKEN_STORAGE_KEY);
+    const usedCachedToken = !!token;
     if (!token) {
       token = await promptForToken(lastAuthFailed);
       lastAuthFailed = false;
@@ -349,6 +358,7 @@
 
       ws.onopen = () => {
         wsOpened = true;
+        cachedAuthFailCount = 0;
         localStorage.setItem(TOKEN_STORAGE_KEY, token);
         console.log('WebSocket connected, waiting for offer...');
         statusText.textContent = 'WebSocket підключено, чекаємо offer...';
@@ -557,13 +567,22 @@
         console.log('WebSocket closed');
         statusDot.className = 'error';
         if (!wsOpened) {
-          // Never got past the handshake — most likely a wrong/stale token.
-          // The WebSocket API doesn't expose the HTTP status code, so this is
-          // a best-effort guess rather than a certain diagnosis.
-          localStorage.removeItem(TOKEN_STORAGE_KEY);
-          lastAuthFailed = true;
-          statusText.textContent = 'Не вдалося увійти — можливо, невірний пароль';
-          setTimeout(connect, 300);
+          // Never got past the handshake. A freshly-typed token failing on
+          // its first use is very likely just wrong — reprompt right away.
+          // A *cached* token (one that worked before) gets a few retries
+          // first, since this same symptom equally means "server briefly
+          // unreachable" and wiping a good token on a network blip forces
+          // the user to retype a password that was never wrong.
+          if (!usedCachedToken || ++cachedAuthFailCount >= MAX_CACHED_AUTH_RETRIES) {
+            localStorage.removeItem(TOKEN_STORAGE_KEY);
+            lastAuthFailed = true;
+            cachedAuthFailCount = 0;
+            statusText.textContent = 'Не вдалося увійти — можливо, невірний пароль';
+            setTimeout(connect, 300);
+          } else {
+            statusText.textContent = `Не вдалося підключитися, повторна спроба (${cachedAuthFailCount}/${MAX_CACHED_AUTH_RETRIES})...`;
+            setTimeout(connect, 1000);
+          }
         } else {
           statusText.textContent = 'З\'єднання закрито';
         }
