@@ -1,6 +1,6 @@
 [package]
 name = "ring-2zero"
-version = "0.291.0"
+version = "0.299.0"
 edition = "2021"
 description = "High-performance Wayland screen streamer over WebRTC with tile-based diff encoding"
 license = "MIT"
