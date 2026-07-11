@@ -146,6 +146,14 @@ docs/
 
 ## Changelog
 
+### v0.299.1 (July 2026)
+- **Fixed**: `invalidate_tiles`/`invalidate_cache` (ACK-loss recovery, periodic quality refresh) were silently defeated by the zero-copy half-hash shortcut whenever a tile's pixels weren't actively changing at the moment of invalidation — they now actually force re-detection.
+- **Fixed**: tiles held back by FPS throttling were misclassified as "unchanged" in the per-tile change-history/priority stats, and their hash baseline never advanced — both now update correctly even when the tile isn't sent that frame.
+- **Fixed**: the per-tile encode cache could serve a stale WebP blob for a merged multi-tile region, since cache validity was keyed on only one representative cell's hash while the cached bytes covered the whole merged block — the fast path is now restricted to single-cell tiles.
+- **Fixed**: the damage-region skip could leave background tiles unsent on a client's very first frame if the compositor didn't report full-frame damage on connect.
+- **Fixed**: ACK-loss tile indices are now tagged with an epoch counter so they can't be misapplied to a new tile grid after a resolution change.
+- **Changed**: removed four full-array clones per frame from the diff hot path (borrowing instead) and replaced two `HashSet<usize>` lookups with dense `Vec<bool>` masks — a measured ~15–25% reduction in diff-detection time on light/medium-change frames.
+
 ### v0.299 (July 2026)
 - **Fixed**: `RTCPeerConnection` was never explicitly closed on drop, leaking the ICE/DTLS/SCTP transport stack on every reconnect — now closed via `Drop`.
 - **Fixed**: DataChannel accidentally lost its `ordered: false` setting, reintroducing head-of-line-blocking latency.
