@@ -146,6 +146,13 @@ docs/
 
 ## Changelog
 
+### v0.299 (July 2026)
+- **Fixed**: `RTCPeerConnection` was never explicitly closed on drop, leaking the ICE/DTLS/SCTP transport stack on every reconnect — now closed via `Drop`.
+- **Fixed**: DataChannel accidentally lost its `ordered: false` setting, reintroducing head-of-line-blocking latency.
+- **Fixed**: TLS cert/key load failure now returns a clean error and exits instead of panicking.
+- **Changed**: `RING2ZERO_IPV4_ONLY` is now read into `Config` (was previously unconditional) — IPv6-only deployments no longer get zero ICE candidates.
+- **Changed**: `RING2ZERO_TLS_CERT/KEY`, `RING2ZERO_ICE_INTERFACE`, `RING2ZERO_MAX_FPS` consolidated into `Config`, matching the existing `RING2ZERO_TOKEN` pattern.
+
 ### v0.291 (July 2026)
 - **Fixed**: ICE candidates from the client were dropped whenever they arrived before the SDP answer (a common race, since the client fires `onicecandidate` before sending its answer) — they're now buffered and applied once the remote description is set. This was silently breaking nearly every non-localhost connection.
 - **Fixed**: Safari/Chrome obfuscate host ICE candidates behind a `<uuid>.local` mDNS name; mDNS resolution is now explicitly enabled so these candidates actually resolve instead of being unusable.
