@@ -2,13 +2,12 @@ use crate::config::Config;
 use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use crate::frame::Frame;
 use rayon::prelude::*;
-use std::collections::HashSet;
 
 pub struct DiffDetector {
     prev_hashes: Vec<u64>,
     prev_prev_hashes: Vec<u64>,
     tile_metadata: Vec<TileMetadata>,
-    damaged_tiles: HashSet<usize>,
+    damaged_tiles: Vec<bool>,
     config: Config,
     frame_count: u64,
     skipped_hashes: u64,
@@ -21,7 +20,7 @@ impl DiffDetector {
             prev_hashes: Vec::new(),
             prev_prev_hashes: Vec::new(),
             tile_metadata: Vec::new(),
-            damaged_tiles: HashSet::new(),
+            damaged_tiles: Vec::new(),
             config,
             frame_count: 0,
             skipped_hashes: 0,
@@ -45,6 +44,7 @@ impl DiffDetector {
             self.prev_hashes = vec![0; total_tiles];
             self.prev_prev_hashes = vec![0; total_tiles];
             self.tile_metadata.resize(total_tiles, TileMetadata::default());
+            self.damaged_tiles = vec![false; total_tiles];
         }
 
         // Перевіряємо чи є damage regions від Wayland
@@ -59,7 +59,7 @@ impl DiffDetector {
         }
 
         // Створюємо набір тайлів що перетинаються з damage regions
-        self.damaged_tiles.clear();
+        self.damaged_tiles.iter_mut().for_each(|d| *d = false);
         if has_damage {
             for damage in &frame.damage_regions {
                 // Знаходимо всі тайли що перетинаються з цим damage region
@@ -83,54 +83,60 @@ impl DiffDetector {
 
                 for ty in tile_y_start..tile_y_end {
                     for tx in tile_x_start..tile_x_end {
-                        self.damaged_tiles.insert((ty * self.config.tiles_x + tx) as usize);
+                        self.damaged_tiles[(ty * self.config.tiles_x + tx) as usize] = true;
                     }
                 }
             }
         }
 
-        // Snapshots для безпечного паралельного доступу (fix data races)
-        let prev_half_hashes: Vec<u64> = self.tile_metadata
-            .iter()
-            .map(|m| m.prev_half_hash)
-            .collect();
+        // Read-only borrows handed to the rayon closure below. Nothing in the
+        // parallel section mutates self, so these are plain shared
+        // references — no per-frame Vec/HashSet clones needed (the previous
+        // version cloned prev_hashes/prev_prev_hashes/metadata/damaged_tiles
+        // in full every frame just to satisfy the borrow checker).
+        let prev_hashes_ref = &self.prev_hashes;
+        let prev_prev_hashes_ref = &self.prev_prev_hashes;
+        let tile_metadata_ref = &self.tile_metadata;
+        let damaged_tiles_ref = &self.damaged_tiles;
+        let frame_count = self.frame_count;
+        let config = &self.config;
 
-        // Snapshot всіх полів що читаються в parallel closure
-        let prev_hashes_snap = self.prev_hashes.clone();
-        let prev_prev_hashes_snap = self.prev_prev_hashes.clone();
-        let metadata_snap: Vec<(u64, bool)> = self.tile_metadata
-            .iter()
-            .map(|m| (m.last_sent_frame, m.last_sent_as_dynamic))
-            .collect();
-        let damaged_tiles_snap = self.damaged_tiles.clone();
-
-        // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata
-        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, stats) = (0..total_tiles)
+        // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata.
+        // Besides the tiles actually queued for sending, this also tracks
+        // tiles that changed but were held back by FPS throttling
+        // (`changed_unsent`) — their hash baseline still needs to advance and
+        // their change_history still needs to reflect that they changed, even
+        // though nothing was sent for them this frame.
+        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, changed_unsent, stats) = (0..total_tiles)
             .into_par_iter()
             .fold(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
-                |(mut hashes, mut tiles, mut indices, mut half_hashes, mut stats), i| {
-                    // Якщо є damage tracking і тайл не в damaged_tiles - skip hashing
-                    if has_damage && !damaged_tiles_snap.contains(&i) {
-                        hashes.push((i, prev_hashes_snap[i]));
+                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                |(mut hashes, mut tiles, mut indices, mut half_hashes, mut changed_unsent, mut stats), i| {
+                    // Damage-based skip only applies once we have a real previous
+                    // frame to compare against — on the very first frame there is
+                    // no prior content for the client at all, so every tile must
+                    // be considered regardless of what the compositor reports as
+                    // damaged.
+                    if has_damage && !is_first_frame && !damaged_tiles_ref[i] {
+                        hashes.push((i, prev_hashes_ref[i]));
                         stats.1 += 1; // damage_skipped
-                        return (hashes, tiles, indices, half_hashes, stats);
+                        return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
                     }
 
-                    let ty = i as u32 / self.config.tiles_x;
-                    let tx = i as u32 % self.config.tiles_x;
+                    let ty = i as u32 / config.tiles_x;
+                    let tx = i as u32 % config.tiles_x;
                     let x = tx * tile_width;
                     let y = ty * tile_height;
-                    let tw = if tx == self.config.tiles_x - 1 { width - x } else { tile_width };
+                    let tw = if tx == config.tiles_x - 1 { width - x } else { tile_width };
                     let th = if ty == tiles_y - 1 { height - y } else { tile_height };
 
                     // Compute half_hash ONCE
                     let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
 
-                    let full_hash = if !is_first_frame && half_hash == prev_half_hashes[i] {
+                    let full_hash = if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
                         // Half хеш не змінився → Zero-copy!
                         stats.0 += 1; // skipped_hashes
-                        prev_hashes_snap[i]
+                        prev_hashes_ref[i]
                     } else {
                         // Half хеш змінився → повний хеш
                         hash_tile(frame_data, x, y, tw, th, width)
@@ -139,26 +145,26 @@ impl DiffDetector {
                     hashes.push((i, full_hash));
 
                     // Change detection
-                    let is_changed = is_first_frame || full_hash != prev_hashes_snap[i];
+                    let is_changed = is_first_frame || full_hash != prev_hashes_ref[i];
 
                     if !is_changed {
-                        return (hashes, tiles, indices, half_hashes, stats);
+                        return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
                     }
 
                     // Tile changed - check if we should send it
                     let is_dynamic = !is_first_frame
-                        && metadata_snap[i].0 > 0
-                        && prev_prev_hashes_snap[i] != prev_hashes_snap[i]
-                        && prev_hashes_snap[i] != full_hash;
+                        && tile_metadata_ref[i].last_sent_frame > 0
+                        && prev_prev_hashes_ref[i] != prev_hashes_ref[i]
+                        && prev_hashes_ref[i] != full_hash;
 
-                    let was_sent_as_dynamic = metadata_snap[i].1;
-                    let frames_since_last = self.frame_count - metadata_snap[i].0;
+                    let was_sent_as_dynamic = tile_metadata_ref[i].last_sent_as_dynamic;
+                    let frames_since_last = frame_count - tile_metadata_ref[i].last_sent_frame;
 
                     // Розраховуємо інтервал відправки
                     let interval = if is_dynamic {
-                        self.config.target_fps.get() / self.config.dynamic_tile_fps.get()
+                        config.target_fps.get() / config.dynamic_tile_fps.get()
                     } else {
-                        self.config.target_fps.get() / self.config.static_tile_fps.get()
+                        config.target_fps.get() / config.static_tile_fps.get()
                     };
 
                     // Перевіряємо чи треба відправляти
@@ -168,9 +174,9 @@ impl DiffDetector {
 
                     if should_send {
                         let quality = if is_dynamic {
-                            self.config.webp_quality_low
+                            config.webp_quality_low
                         } else {
-                            self.config.webp_quality_high
+                            config.webp_quality_high
                         };
 
                         // Lock-free push to thread-local vectors
@@ -185,24 +191,31 @@ impl DiffDetector {
                             stats.4 += 1; // static_sent
                         }
                     } else {
+                        // Changed but throttled by the FPS interval: still
+                        // record it so its baseline/change_history get
+                        // updated below instead of being misclassified as
+                        // "unchanged".
+                        changed_unsent.push((i, half_hash));
                         stats.2 += 1; // skipped_by_fps
                     }
 
-                    (hashes, tiles, indices, half_hashes, stats)
+                    (hashes, tiles, indices, half_hashes, changed_unsent, stats)
                 },
             )
             .reduce(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
-                |(mut h1, mut t1, mut i1, mut hh1, s1), (h2, t2, i2, hh2, s2)| {
+                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                |(mut h1, mut t1, mut i1, mut hh1, mut cu1, s1), (h2, t2, i2, hh2, cu2, s2)| {
                     h1.extend(h2);
                     t1.extend(t2);
                     i1.extend(i2);
                     hh1.extend(hh2);
+                    cu1.extend(cu2);
                     (
                         h1,
                         t1,
                         i1,
                         hh1,
+                        cu1,
                         (s1.0 + s2.0, s1.1 + s2.1, s1.2 + s2.2, s1.3 + s2.3, s1.4 + s2.4),
                     )
                 },
@@ -237,11 +250,9 @@ impl DiffDetector {
             self.total_hashes = 0;
         }
 
-        // Sequential metadata update (necessary for VecDeque which is not thread-safe)
-        // Reuse computed hashes from parallel phase
-
+        // Sequential metadata update for tiles that were actually sent
+        // (necessary for CircularBuffer which is not thread-safe)
         for (i, half_hash) in tile_hashes_vec {
-
             let is_dynamic = !is_first_frame
                 && self.tile_metadata[i].last_sent_frame > 0
                 && self.prev_prev_hashes[i] != self.prev_hashes[i]
@@ -262,12 +273,38 @@ impl DiffDetector {
             self.prev_hashes[i] = new_hashes_array[i];
         }
 
-        // SIMD Batch Operation: Increment unchanged_frames for all unchanged tiles
-        // Use HashSet for O(1) lookup instead of Vec.contains() O(n)
-        let changed_set: HashSet<usize> = tile_indices.iter().copied().collect();
+        // Metadata update for tiles that changed but were held back by FPS
+        // throttling: the hash baseline still has to advance (otherwise the
+        // next frame's diff is computed against a stale, multi-frame-old
+        // value) and change_history has to record that they DID change.
+        // last_sent_frame/last_sent_as_dynamic stay untouched since nothing
+        // was actually transmitted for these tiles.
+        for &(i, half_hash) in &changed_unsent {
+            let meta = &mut self.tile_metadata[i];
+            meta.prev_half_hash = half_hash;
+            meta.unchanged_frames = 0;
+            meta.change_history.push(true);
+            meta.last_hash_diff = self.prev_hashes[i] ^ new_hashes_array[i];
+
+            self.prev_prev_hashes[i] = self.prev_hashes[i];
+            self.prev_hashes[i] = new_hashes_array[i];
+        }
+
+        // Increment unchanged_frames for tiles that genuinely did not change
+        // this frame (i.e. excluding both sent tiles and throttled-but-changed
+        // tiles). A dense Vec<bool> mask avoids the per-frame HashSet
+        // allocation/hashing that a HashSet<usize> would need for a known,
+        // contiguous index range.
+        let mut changed_mask = vec![false; total_tiles];
+        for &i in &tile_indices {
+            changed_mask[i] = true;
+        }
+        for &(i, _) in &changed_unsent {
+            changed_mask[i] = true;
+        }
 
         let unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
-            .filter(|i| !changed_set.contains(i))
+            .filter(|&i| !changed_mask[i])
             .map(|i| (i, self.tile_metadata[i].unchanged_frames))
             .collect();
 
@@ -342,6 +379,13 @@ impl DiffDetector {
             if i < self.tile_metadata.len() {
                 self.tile_metadata[i].cached_hash = 0;
                 self.tile_metadata[i].cached_encoded = None;
+                // Must also reset prev_half_hash: otherwise, if the tile's
+                // real pixels haven't changed since, detect_changes' zero-copy
+                // shortcut (half_hash == prev_half_hash) reuses the
+                // just-zeroed prev_hashes[i] as both "previous" and "current"
+                // hash, so is_changed comes out false and the invalidation
+                // silently never takes effect.
+                self.tile_metadata[i].prev_half_hash = 0;
                 self.prev_hashes[i] = 0;
                 self.prev_prev_hashes[i] = 0;
             }
@@ -356,7 +400,10 @@ impl DiffDetector {
             self.tile_metadata[i].cached_hash = 0;
             self.tile_metadata[i].cached_encoded = None;
             if self.tile_metadata[i].last_sent_as_dynamic {
-                // prev_prev == prev → is_dynamic = false → high-quality re-encode
+                // prev_prev == prev → is_dynamic = false → high-quality re-encode.
+                // prev_half_hash must be reset too — see invalidate_tiles's comment
+                // above for why, same zero-copy shortcut applies here.
+                self.tile_metadata[i].prev_half_hash = 0;
                 self.prev_hashes[i] = 0;
                 self.prev_prev_hashes[i] = 0;
             }

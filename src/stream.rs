@@ -6,6 +6,7 @@ use crate::frame::Frame;
 use crate::tile::Tile;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -71,6 +72,18 @@ impl StreamServer {
         let stale_tiles: Arc<std::sync::Mutex<Vec<usize>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let stale_tiles_thread = Arc::clone(&stale_tiles);
+
+        // Bumped by the processing thread every time diff_detector.reset()
+        // resizes the tile grid (screen resolution change). Tile indices
+        // recorded in pending_acks before a bump describe a grid that no
+        // longer exists — applying them to invalidate_tiles afterwards would
+        // either no-op on an out-of-range index or, worse, silently
+        // invalidate an unrelated tile in the new grid. Tagging each
+        // pending-ack entry with the epoch it was sent under lets the async
+        // loop drop those entries instead of forwarding them as stale.
+        let epoch = Arc::new(AtomicU64::new(0));
+        let epoch_thread = Arc::clone(&epoch);
+        let epoch_async = Arc::clone(&epoch);
 
         let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<u32>();
         let ack_tx_cb = ack_tx.clone();
@@ -138,6 +151,7 @@ impl StreamServer {
                 let send_header = if screen_size.map_or(true, |s| s != (width, height)) {
                     if screen_size.is_some() {
                         diff_detector.reset();
+                        epoch_thread.fetch_add(1, Ordering::Relaxed);
                     }
                     screen_size = Some((width, height));
                     last_full_refresh = Instant::now();
@@ -186,6 +200,25 @@ impl StreamServer {
                     })
                     .collect();
 
+                // A merged tile can span up to 4x4 original grid cells
+                // (see encoder.rs's MAX_MERGE_TILES_X/Y), but tile_idx above
+                // is only the ONE representative cell at its top-left
+                // corner. The per-tile cache below is keyed on that single
+                // cell's hash — using it to validate a cache entry whose
+                // bytes cover the whole merged region would let a stale
+                // encode (from a previous, differently-shaped merge sharing
+                // the same representative cell) be resent while a *different*
+                // covered cell has since changed. Restrict the cache
+                // fast-path to genuinely single-cell tiles, where the
+                // representative hash actually covers the whole tile.
+                let is_single_cell = |tile: &Tile| {
+                    let start_tx = tile.x / tile_width;
+                    let start_ty = tile.y / tile_height;
+                    let end_tx = (tile.x + tile.width - 1) / tile_width;
+                    let end_ty = (tile.y + tile.height - 1) / tile_height;
+                    start_tx == end_tx && start_ty == end_ty
+                };
+
                 tiles_with_data.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
                 let sorted_tiles: Vec<Tile> = tiles_with_data.iter().map(|(t, _, _)| *t).collect();
@@ -202,7 +235,7 @@ impl StreamServer {
                     let tile_idx = sorted_tile_indices[i];
 
                     let metadata = diff_detector.get_metadata(tile_idx);
-                    if metadata.cached_hash == tile_hashes[i] {
+                    if is_single_cell(tile) && metadata.cached_hash == tile_hashes[i] {
                         if let Some(ref cached) = metadata.cached_encoded {
                             encoded[i] = cached.clone();
                             continue;
@@ -305,6 +338,9 @@ impl StreamServer {
 
                 let tile_metadata = diff_detector.get_all_metadata_mut();
                 for (i, &tile_idx) in sorted_tile_indices.iter().enumerate() {
+                    if !is_single_cell(&sorted_tiles[i]) {
+                        continue;
+                    }
                     let metadata = &mut tile_metadata[tile_idx];
                     if !encoded[i].is_empty() {
                         metadata.cached_encoded = Some(encoded[i].clone());
@@ -325,8 +361,8 @@ impl StreamServer {
 
         // --- Async send loop with ACK tracking ---
         let mut frame_seq: u32 = 0;
-        // seq → (sent_at, tile_indices)
-        let mut pending_acks: HashMap<u32, (Instant, Vec<usize>)> = HashMap::new();
+        // seq → (sent_at, epoch, tile_indices)
+        let mut pending_acks: HashMap<u32, (Instant, u64, Vec<usize>)> = HashMap::new();
         let ack_timeout = Duration::from_millis(150);
 
         let mut frame_count = 0u64;
@@ -341,15 +377,23 @@ impl StreamServer {
             // Find timed-out frames and push their tiles to stale list
             let now = Instant::now();
             let timed_out: Vec<u32> = pending_acks.iter()
-                .filter(|(_, (sent_at, _))| now.duration_since(*sent_at) > ack_timeout)
+                .filter(|(_, (sent_at, _, _))| now.duration_since(*sent_at) > ack_timeout)
                 .map(|(seq, _)| *seq)
                 .collect();
 
             if !timed_out.is_empty() {
+                let current_epoch = epoch_async.load(Ordering::Relaxed);
                 let mut stale = stale_tiles.lock().unwrap();
                 for seq in timed_out {
-                    if let Some((_, indices)) = pending_acks.remove(&seq) {
-                        stale.extend(indices);
+                    if let Some((_, sent_epoch, indices)) = pending_acks.remove(&seq) {
+                        // A resolution change (diff_detector.reset()) since this
+                        // frame was sent means these indices describe a tile
+                        // grid that no longer exists — forwarding them would
+                        // invalidate an unrelated tile in the new grid instead
+                        // of the one that actually lost its packet.
+                        if sent_epoch == current_epoch {
+                            stale.extend(indices);
+                        }
                     }
                 }
             }
@@ -371,7 +415,7 @@ impl StreamServer {
                 seq_pkt[6..10].copy_from_slice(&(tiles.len() as u32).to_le_bytes());
                 data_channel.send(&Bytes::copy_from_slice(&seq_pkt)).await?;
 
-                pending_acks.insert(seq, (Instant::now(), tile_indices));
+                pending_acks.insert(seq, (Instant::now(), epoch_async.load(Ordering::Relaxed), tile_indices));
 
                 let queue_time = timestamp.elapsed();
                 let send_start = Instant::now();

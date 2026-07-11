@@ -82,7 +82,7 @@ impl FrameProfiler {
 
         // 1. Diff Detection
         let t0 = Instant::now();
-        let (changed_tiles, tile_indices) = self.diff_detector.detect_changes(&frame);
+        let (changed_tiles, _) = self.diff_detector.detect_changes(&frame);
         timing.diff_detection_us = t0.elapsed().as_secs_f64() * 1_000_000.0;
         timing.tiles_detected = changed_tiles.len();
 
@@ -109,9 +109,15 @@ impl FrameProfiler {
         let t2 = Instant::now();
         let mut tiles_with_data: Vec<(_, usize, f32)> = merged_tiles
             .iter()
-            .enumerate()
-            .map(|(enum_idx, tile)| {
-                let tile_idx = tile_indices[enum_idx];
+            .map(|tile| {
+                // tile_indices is aligned to the PRE-merge changed_tiles list;
+                // merge() can collapse several original tiles into fewer
+                // merged ones, so indexing it by position in the (smaller)
+                // merged_tiles list picks an unrelated tile whenever merging
+                // actually reduced the count. Recompute the representative
+                // original-grid index from the merged tile's own geometry
+                // instead (same approach stream.rs uses for the real path).
+                let tile_idx = (tile.y / self.tile_height * self.config.tiles_x + tile.x / self.tile_width) as usize;
                 let metadata = self.diff_detector.get_metadata(tile_idx);
                 let priority = calculate_priority(
                     tile,
