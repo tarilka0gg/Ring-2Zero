@@ -102,6 +102,14 @@ fn print_help() {
     println!(
         "ring-2zero — Wayland screen streaming server over WebRTC\n\
          \n\
+         Captures your screen — DMA-BUF zero-copy on wlroots compositors\n\
+         (niri, sway), or via the PipeWire portal on GNOME/KDE/X11 — and\n\
+         streams it live to any browser over a WebRTC DataChannel. No X11\n\
+         forwarding, no VNC client, just a URL. Tile-based diff encoding\n\
+         with adaptive WebP quality keeps bandwidth low; the browser client\n\
+         is served by this same binary, including over Tailscale/TLS for\n\
+         remote access.\n\
+         \n\
          USAGE:\n\
          \x20   ring-2zero [OPTIONS]\n\
          \x20   r2zr [OPTIONS]           (shorthand alias — set up by install.sh)\n\
@@ -135,6 +143,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_banner();
         print_help();
         return Ok(());
     }
