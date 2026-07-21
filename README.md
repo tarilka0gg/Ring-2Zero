@@ -20,6 +20,8 @@ High-performance Wayland screen streaming server with WebRTC support.
 
 ## Quick start
 
+The browser client is baked into the binary — there's no separate file to open or static server to run. Once the server is up, one URL is the whole client.
+
 1. **Install system dependencies** — see [Dependencies](#dependencies) below for the full list and per-distro package names.
 
 2. **Build**:
@@ -28,27 +30,23 @@ High-performance Wayland screen streaming server with WebRTC support.
    cd Ring-2Zero
    cargo build --release
    ```
-   Not on a wlroots compositor (niri, sway)? Add `--features pipewire_capture` — see [Building](#building).
+   Not on a wlroots compositor (niri, sway)? Add `--features pipewire_capture` — see [Building](#building). Want a plain `ring-2zero` command instead of typing the `target/release/` path every time? `cargo install --path .` puts it on `PATH` (usually `~/.cargo/bin`).
 
 3. **Run the server**:
    ```bash
-   ./target/release/ring-2zero
+   ./target/release/ring-2zero      # or just `ring-2zero` after `cargo install`
    ```
-   The first run benchmarks your CPU's WebP encoding speed to pick a sensible tile-merging setting, and caches the result (`~/.cache/screen-streamer/cpu_bench.json`) so it only costs a couple seconds once. Skip it with `--no-adaptive`.
+   The first run benchmarks your CPU's WebP encoding speed to pick a sensible tile-merging setting, and caches the result (`~/.cache/screen-streamer/cpu_bench.json`) so it only costs a couple seconds once. Skip it with `--no-adaptive`. `--help` prints the full flag/env var reference.
 
    Startup prints what you need to connect:
    ```
    WebRTC signaling server (WebSocket): ws://0.0.0.0:9001
    TLS disabled — set RING2ZERO_TLS_CERT/RING2ZERO_TLS_KEY for wss:// (required for Safari/iOS remote access)
    Auth token: 3f9a1c...
-   Connect clients with: client.html?server=<host>:9001 (password prompt uses the token above)
+   Open http://<this-host>:9001 in a browser (password prompt uses the token above) — no separate client file needed, this binary serves the page itself
    ```
 
-4. **Open the client**:
-   ```bash
-   xdg-open docs/client-examples/client.html
-   ```
-   On first load it prompts for the auth token printed above — paste it once, it's remembered in the browser's `localStorage` from then on.
+4. **Open that URL** in a browser — e.g. `http://localhost:9001`. On first load it prompts for the auth token printed above; paste it once, it's remembered in the browser's `localStorage` from then on. The page auto-detects the server address it was loaded from, so the same URL keeps working unchanged when you switch to [Remote access](#remote-access) (Tailscale, etc.) below — no `?server=` param needed unless you're hosting the page somewhere other than this binary.
 
 5. You should now see your screen streaming in the browser tab. To view it from *another* device (phone, laptop, over the internet), see [Remote access](#remote-access).
 
@@ -63,6 +61,9 @@ cargo build --release --features pipewire_capture
 
 # Requires Clang on some systems
 CC=/usr/lib/llvm/22/bin/clang cargo build --release
+
+# Optional: put `ring-2zero` on PATH instead of typing target/release/ring-2zero
+cargo install --path .
 ```
 
 ## Configuration
@@ -106,9 +107,9 @@ sudo tailscale up                     # opens a browser link to log in
 
 Safari (and iOS in general) requires a secure context for WebRTC — set
 `RING2ZERO_TLS_CERT`/`RING2ZERO_TLS_KEY` (e.g. from `tailscale cert
-<device>.<tailnet>.ts.net`) to serve `wss://` instead of `ws://`, and serve
-`client.html` itself over HTTPS too (any static file server with the same
-cert works).
+<device>.<tailnet>.ts.net`) to serve `wss://` instead of `ws://`. The client
+page is served by this same binary over the same port, so it automatically
+gets HTTPS too — no separate static file server or cert-juggling needed.
 
 If the server machine has more than one network interface (e.g. a LAN port
 alongside the Tailscale one), ICE may otherwise advertise a candidate the
@@ -117,9 +118,9 @@ candidate gathering to just the VPN interface.
 
 Find the server's Tailscale hostname (`tailscale status`, or rename the
 device with `tailscale set --hostname=<name>` for a nicer URL), then open
-`client.html?server=<name>.<tailnet>.ts.net:9001` from the viewing device —
-or just `client.html` on its own if that's already the default in
-`docs/client-examples/client.html`.
+`https://<name>.<tailnet>.ts.net:9001` from the viewing device — the page
+auto-detects that address and connects back to it, no `?server=` param
+needed.
 
 ## Authentication
 
@@ -172,7 +173,7 @@ Optional (for `--features pipewire_capture`):
 ```
 src/
 ├── main.rs               — entry point
-├── server.rs             — WebSocket + WebRTC server
+├── server.rs             — WebSocket + WebRTC server, serves the client page over HTTP(S)
 ├── stream.rs             — streaming loop, ACK system
 ├── capture/
 │   ├── mod.rs            — backend auto-detection
@@ -193,7 +194,7 @@ src_c/
 docs/
 ├── DEVELOPMENT.md        — architecture, config/protocol reference, troubleshooting
 └── client-examples/
-    └── client.html       — browser WebRTC client
+    └── client.html       — browser WebRTC client, embedded into the binary via include_str!
 ```
 
 For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.md](CONTRIBUTING.md); for architecture, the wire protocol, key algorithms, and troubleshooting see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

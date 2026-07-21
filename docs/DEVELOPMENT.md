@@ -25,6 +25,7 @@ pipewire::PipeWireCapture      │                                  (stream.rs)
 - **Merge** (`encoder.rs`) groups adjacent changed tiles into up to 4×4-cell rectangles.
 - **Priority + encode** (`stream.rs`, `encoding_pool.rs`) sorts merged tiles by priority, extracts pixels (`tile_extract.rs`), and encodes to WebP across a worker pool, with a per-tile cache for repeats.
 - **Transport** (`stream.rs`, `webrtc_connection.rs`, `signaling.rs`, `server.rs`) frames tiles into DataChannel packets with ACK tracking, and handles the WebSocket signaling handshake (SDP offer/answer, ICE candidates, token auth) with auto-reconnect.
+- **Client page** (`server.rs`) — `docs/client-examples/client.html` is embedded into the binary (`include_str!`) and served on any plain HTTP GET to the same port the WebSocket listens on, over the same TLS if configured. `handle_connection`/`handle_connection_tls` sniff the first bytes of a new connection to dispatch between a WebSocket upgrade and a static GET; the TLS path uses a small `PrefixedStream` wrapper to "un-consume" those sniffed bytes before handing the connection to the WebSocket upgrade, since (unlike a raw `TcpStream`) a generic TLS stream has no kernel-level `peek`.
 
 ## Configuration reference
 

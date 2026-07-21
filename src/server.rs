@@ -8,45 +8,126 @@ use crate::signaling::{SignalingChannel, wait_for_answer};
 use crate::capture::ScreenCapture;
 use crate::stream::StreamServer;
 
+use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
+use std::task::{Context as TaskContext, Poll};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use futures_util::{SinkExt, StreamExt};
 
+/// The browser client, baked into the binary so `ring-2zero` is a single
+/// self-contained executable — no separate static file server, no path to
+/// remember, and it's served from whatever host/port the WebSocket signaling
+/// itself is reachable on (including over Tailscale/TLS), so the page's own
+/// `location.host` is always the right WebSocket address to default to.
+const CLIENT_HTML: &str = include_str!("../docs/client-examples/client.html");
+
 /// Handle incoming plaintext TCP connection - dispatch to WebSocket or HTTP handler
 pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<()> {
     let mut buffer = [0u8; 1024];
     let stream = tcp_stream;
 
+    // peek (not read) so the WebSocket upgrade path below still sees these
+    // bytes at the start of the stream — accept_hdr_async needs to parse the
+    // full HTTP upgrade request itself.
     let n = stream.peek(&mut buffer).await?;
     let request = String::from_utf8_lossy(&buffer[..n]);
 
     if request.contains("Upgrade: websocket") || request.contains("Upgrade: WebSocket") {
         println!("WebSocket connection");
         handle_websocket_connection(stream, config).await
+    } else if request.starts_with("GET ") {
+        serve_client_html(stream).await
     } else {
-        // Could add HTTP handler here for status page, etc.
-        Err(Error::WebRTC("Non-WebSocket connections not supported".into()))
+        Err(Error::WebRTC("Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into()))
     }
 }
 
 /// Handle an already-TLS-terminated connection (see `main.rs`'s TLS acceptor).
 /// Safari requires a secure context for WebRTC, so remote/Safari clients need
-/// `wss://` here rather than `ws://`. There's no plaintext HTTP peeking on
-/// this path since a TLS listener on this port only ever serves the WS
-/// upgrade.
-pub async fn handle_connection_tls<S>(stream: S, config: Config) -> Result<()>
+/// `wss://` here rather than `ws://` — and since the client page is now
+/// served from this same port, that secure context covers the page load too.
+pub async fn handle_connection_tls<S>(mut stream: S, config: Config) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    println!("WebSocket connection (TLS)");
-    handle_websocket_connection(stream, config).await
+    // Unlike a raw TcpStream there's no kernel-level peek on a generic TLS
+    // stream, so the sniffed bytes have to be read (consumed) and then
+    // handed back via PrefixedStream before the WebSocket upgrade parses the
+    // request itself.
+    let mut buffer = [0u8; 1024];
+    let n = stream.read(&mut buffer).await?;
+    let request = String::from_utf8_lossy(&buffer[..n]).into_owned();
+
+    if request.contains("Upgrade: websocket") || request.contains("Upgrade: WebSocket") {
+        println!("WebSocket connection (TLS)");
+        let wrapped = PrefixedStream::new(buffer[..n].to_vec(), stream);
+        handle_websocket_connection(wrapped, config).await
+    } else if request.starts_with("GET ") {
+        serve_client_html(stream).await
+    } else {
+        Err(Error::WebRTC("Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into()))
+    }
+}
+
+/// Serves the embedded client page over plain HTTP GET. Single-page tool, so
+/// every path resolves to the same response — there's nothing else to route.
+async fn serve_client_html<S: AsyncWrite + Unpin>(mut stream: S) -> Result<()> {
+    let body = CLIENT_HTML.as_bytes();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Replays a prefix of already-consumed bytes before continuing to read from
+/// the wrapped stream — lets a stream get "un-consumed" after sniffing its
+/// first bytes on a transport (TLS) that has no native peek.
+struct PrefixedStream<S> {
+    prefix: Vec<u8>,
+    prefix_pos: usize,
+    inner: S,
+}
+
+impl<S> PrefixedStream<S> {
+    fn new(prefix: Vec<u8>, inner: S) -> Self {
+        Self { prefix, prefix_pos: 0, inner }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        if self.prefix_pos < self.prefix.len() {
+            let remaining = &self.prefix[self.prefix_pos..];
+            let n = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..n]);
+            self.prefix_pos += n;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// Extract a query parameter's value from a URI's query string (e.g. `token=abc` in `?token=abc&x=1`).

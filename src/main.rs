@@ -51,14 +51,46 @@ fn load_tls_acceptor(
     Ok(Some(TlsAcceptor::from(Arc::new(tls_config))))
 }
 
+fn print_help() {
+    println!(
+        "ring-2zero — Wayland screen streaming server over WebRTC\n\
+         \n\
+         USAGE:\n\
+         \x20   ring-2zero [OPTIONS]\n\
+         \n\
+         OPTIONS:\n\
+         \x20   -h, --help       Print this help and exit\n\
+         \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
+         \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
+         \n\
+         Once running, open http://<this-machine>:9001 in a browser — the auth\n\
+         token printed on startup is the connection password. No separate client\n\
+         file or static file server needed, the page is served by this binary.\n\
+         \n\
+         ENVIRONMENT VARIABLES:\n\
+         \x20   RING2ZERO_TOKEN           Fixed auth token (default: random, printed on startup)\n\
+         \x20   RING2ZERO_TLS_CERT/_KEY   PEM cert/key paths to serve wss:// (required for Safari/iOS)\n\
+         \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
+         \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
+         \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
+         \n\
+         See README.md / docs/DEVELOPMENT.md for the full reference."
+    );
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
     // Set RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug for
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
     // checks, mDNS query results) when troubleshooting a connection.
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
-
-    let args: Vec<String> = std::env::args().collect();
 
     // Auto-detect optimal config based on CPU performance
     let mut config = if args.contains(&"--no-adaptive".to_string()) {
@@ -83,14 +115,19 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         }
     };
-    let scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
+    let ws_scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
+    let http_scheme = if tls_acceptor.is_some() { "https" } else { "http" };
 
-    println!("WebRTC signaling server (WebSocket): {scheme}://{addr}");
+    println!("WebRTC signaling server (WebSocket): {ws_scheme}://{addr}");
     if tls_acceptor.is_none() {
         println!("TLS disabled — set RING2ZERO_TLS_CERT/RING2ZERO_TLS_KEY for wss:// (required for Safari/iOS remote access)");
     }
     println!("Auth token: {}", config.auth_token);
-    println!("Connect clients with: client.html?server=<host>:{} (password prompt uses the token above)", config.ws_port);
+    println!(
+        "Open {http_scheme}://<this-host>:{} in a browser (password prompt uses the token above) — \
+        no separate client file needed, this binary serves the page itself",
+        config.ws_port
+    );
     println!("Target FPS: {}", config.target_fps.get());
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());
