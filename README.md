@@ -207,7 +207,7 @@ For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.
 
 ## Changelog
 
-Latest (**v0.300.0**): `install.sh` handles dependencies/compiler/build/alias/man-page end-to-end, `--help` and `man ring-2zero` both work properly now, and 70 unit tests now cover what used to be untested (`diff.rs`, `encoder.rs`, `stream.rs`, and the rest).
+Latest (**v0.300.1**): fixed a real hash collision — two different solid-color tiles of the same size could hash identically, silently missing a diff. `install.sh` handles dependencies/compiler/build/alias/man-page end-to-end, `--help` and `man ring-2zero` both work properly now, and unit tests now cover what used to be untested (`diff.rs`, `encoder.rs`, `stream.rs`, and the rest).
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
