@@ -2,6 +2,7 @@
 name = "ring-2zero"
 version = "0.299.2"
 edition = "2021"
+authors = ["tarilka0gg <tarilka0gg@gmail.com>"]
 description = "High-performance Wayland screen streamer over WebRTC with tile-based diff encoding"
 license = "MIT"
 repository = "https://github.com/tarilka0gg/ring-2zero"

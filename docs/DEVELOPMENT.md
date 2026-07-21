@@ -671,7 +671,6 @@ strip = true               # Видалити symbols (менший binary)
 export RUSTC_WRAPPER=sccache          # Кешування компіляції
 export MOZ_MAKE_FLAGS="-j12"
 export MAKEFLAGS="-j12"
-
 ```
 
 ### Dependencies
