@@ -390,7 +390,12 @@ if [ "$WITH_ALIAS" = 1 ]; then
     case "$target_shell" in
         fish)
             rc_file="$HOME/.config/fish/config.fish"
-            alias_line="abbr -a r2zr ring-2zero"
+            # A real `alias` (not `abbr`): abbr only expands when typed
+            # interactively at the prompt, so it wouldn't show up under
+            # fish's own `alias` listing or work when run non-interactively
+            # (`fish -c 'r2zr ...'`, scripts, etc.) — surprising enough that
+            # it looked broken/missing entirely.
+            alias_line="alias r2zr ring-2zero"
             ;;
         zsh)
             rc_file="$HOME/.zshrc"
