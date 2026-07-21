@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.300.1 (July 2026)
+- **Fixed**: `hash_tile`'s AVX2/SSE2 XOR-accumulator could hash two *different* solid-color tiles of the same size identically — every SIMD lane loaded the exact same value on every iteration for a byte-uniform buffer, and XORing a constant into the accumulator an even number of times cancels to a value that no longer depends on the data at all. Root-caused (not just papered over with a different final mix — that alone didn't fix it, see the regression tests' comments) by tying each iteration's data to the changing seed via addition, not two independently-cancelable XOR terms.
+- **Fixed**: the non-x86_64 scalar hashing fallback (`hash_scalar`) was missing its `use xxhash_rust::xxh3::Xxh3;` import and would never have compiled on a non-x86_64 target.
+- **Added**: a 20-size × 5-color-pair sweep test plus two pinned regression cases (even/odd chunk-count parity) for the collision fix, and a direct SSE2-path test that doesn't rely on runtime AVX2 detection picking a particular code path.
+
 ## v0.300.0 (July 2026)
 - **Added**: `install.sh` — detects the system package manager, checks/installs the required libraries and a C compiler, installs Rust if missing, builds and installs the binary, adds an `r2zr` shell alias (bash/zsh/fish), and installs a `man ring-2zero` page.
 - **Added**: a real man(1) page (`man/ring-2zero.1`) covering the same ground as `--help`.

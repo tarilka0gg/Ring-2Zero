@@ -1,6 +1,6 @@
 [package]
 name = "ring-2zero"
-version = "0.300.0"
+version = "0.300.1"
 edition = "2021"
 authors = ["tarilka0gg <tarilka0gg@gmail.com>"]
 description = "High-performance Wayland screen streamer over WebRTC with tile-based diff encoding"

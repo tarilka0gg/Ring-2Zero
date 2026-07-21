@@ -1,6 +1,8 @@
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
+#[cfg(not(target_arch = "x86_64"))]
+use xxhash_rust::xxh3::Xxh3;
 
 // SIMD detection at runtime
 #[derive(Clone, Copy, Debug)]
@@ -106,21 +108,80 @@ fn hash_contiguous(data: &[u8]) -> u64 {
     hash_scalar(data)
 }
 
+// Four distinct, well-established odd mixing constants (splitmix64 /
+// MurmurHash3 finalizer constants) — one per SIMD lane, instead of the same
+// constant broadcast to every lane (the original implementation). Distinct
+// seeds alone turned out not to be enough (see fold_lanes' doc comment for
+// why) but they're kept anyway as defense in depth against other
+// pathological inputs beyond the byte-uniform case fold_lanes fixes.
+const SEED_LANE_0: u64 = 0x9e3779b97f4a7c15; // splitmix64
+const SEED_LANE_1: u64 = 0xff51afd7ed558ccd; // MurmurHash3 finalizer c1
+const SEED_LANE_2: u64 = 0xc4ceb9fe1a85ec53; // MurmurHash3 finalizer c2
+const SEED_LANE_3: u64 = 0xbf58476d1ce4e5b9; // splitmix64 mix step
+
+/// Combines two or more 64-bit accumulator lanes into one hash, and mixes
+/// the result through a proper avalanche finalizer (MurmurHash3's fmix64).
+///
+/// A plain `lane_a ^ lane_b ^ len` (the original implementation) is
+/// structurally broken: whenever the lanes end up equal — which happens for
+/// any byte-uniform input (e.g. a solid-color tile), since every lane then
+/// accumulates the exact same {data, seed} sequence regardless of what
+/// seed constants are used — XOR cancels them to 0, leaving the hash to
+/// depend only on `len`. Two different solid colors of the same tile size
+/// then hash identically. Rotating each lane by a different amount before
+/// XORing them together means even fully-equal lanes don't cancel (`x ^
+/// rotate_left(x, 16)` is zero only for very specific values of `x`, not
+/// generically), and the finalizer's multiply/shift avalanche destroys
+/// whatever linear structure the rotation-XOR combination still has.
+#[inline]
+fn fold_lanes(lanes: &[u64], len: u64) -> u64 {
+    let mut h = len;
+    for (i, &lane) in lanes.iter().enumerate() {
+        h ^= lane.rotate_left((i as u32) * 16 + 1);
+    }
+    // MurmurHash3 fmix64.
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51afd7ed558ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ceb9fe1a85ec53);
+    h ^= h >> 33;
+    h
+}
+
 // AVX2 implementation (256-bit, процесує 32 байти за раз)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hash_avx2(data: &[u8]) -> u64 {
     let mut acc = _mm256_setzero_si256();
-    let mut seed = _mm256_set1_epi64x(0x9e3779b97f4a7c15u64 as i64);
+    let mut seed = _mm256_set_epi64x(
+        SEED_LANE_3 as i64,
+        SEED_LANE_2 as i64,
+        SEED_LANE_1 as i64,
+        SEED_LANE_0 as i64,
+    );
+    let seed_inc = _mm256_set_epi64x(
+        SEED_LANE_3 as i64,
+        SEED_LANE_2 as i64,
+        SEED_LANE_1 as i64,
+        SEED_LANE_0 as i64,
+    );
 
     let chunks = data.chunks_exact(32);
     let remainder = chunks.remainder();
 
     for chunk in chunks {
         let v = _mm256_loadu_si256(chunk.as_ptr() as *const __m256i);
-        acc = _mm256_xor_si256(acc, v);
-        seed = _mm256_add_epi64(seed, _mm256_set1_epi64x(0x9e3779b97f4a7c15u64 as i64));
-        acc = _mm256_xor_si256(acc, seed);
+        seed = _mm256_add_epi64(seed, seed_inc);
+        // Add (not XOR) v and seed together before folding into acc: XORing
+        // them as two independent terms let a *constant* v (any uniform
+        // buffer loads the same v every iteration) cancel itself out after
+        // an even number of chunks regardless of seed, collapsing acc to a
+        // value that no longer depends on the data at all — see fold_lanes'
+        // doc comment, this is the actual root cause it doesn't cover on
+        // its own. Adding ties each iteration's contribution to the
+        // (monotonically changing) seed, so a repeated v can't cancel.
+        let mixed = _mm256_add_epi64(v, seed);
+        acc = _mm256_xor_si256(acc, mixed);
     }
 
     // Process remainder
@@ -128,18 +189,22 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
         let mut tail = [0u8; 32];
         tail[..remainder.len()].copy_from_slice(remainder);
         let v = _mm256_loadu_si256(tail.as_ptr() as *const __m256i);
-        acc = _mm256_xor_si256(acc, v);
+        let mixed = _mm256_add_epi64(v, seed);
+        acc = _mm256_xor_si256(acc, mixed);
     }
 
-    // Horizontal XOR reduction: 256-bit → 64-bit
+    // Extract all 4 lanes individually (not pre-XORed pairwise) — fold_lanes
+    // needs each one separately to rotate them apart before combining.
     let low = _mm256_extracti128_si256(acc, 0);
     let high = _mm256_extracti128_si256(acc, 1);
-    let xor128 = _mm_xor_si128(low, high);
+    let lanes = [
+        _mm_extract_epi64(low, 0) as u64,
+        _mm_extract_epi64(low, 1) as u64,
+        _mm_extract_epi64(high, 0) as u64,
+        _mm_extract_epi64(high, 1) as u64,
+    ];
 
-    let low64 = _mm_extract_epi64(xor128, 0) as u64;
-    let high64 = _mm_extract_epi64(xor128, 1) as u64;
-
-    low64 ^ high64 ^ (data.len() as u64)
+    fold_lanes(&lanes, data.len() as u64)
 }
 
 // SSE2 implementation (128-bit, процесує 16 байтів за раз)
@@ -147,16 +212,20 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
 #[target_feature(enable = "sse2")]
 unsafe fn hash_sse2(data: &[u8]) -> u64 {
     let mut acc = _mm_setzero_si128();
-    let mut seed = _mm_set1_epi64x(0x9e3779b97f4a7c15u64 as i64);
+    let mut seed = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
+    let seed_inc = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
 
     let chunks = data.chunks_exact(16);
     let remainder = chunks.remainder();
 
     for chunk in chunks {
         let v = _mm_loadu_si128(chunk.as_ptr() as *const __m128i);
-        acc = _mm_xor_si128(acc, v);
-        seed = _mm_add_epi64(seed, _mm_set1_epi64x(0x9e3779b97f4a7c15u64 as i64));
-        acc = _mm_xor_si128(acc, seed);
+        seed = _mm_add_epi64(seed, seed_inc);
+        // See hash_avx2's comment: add (not XOR) v and seed before folding
+        // into acc, so a constant v (any uniform buffer) can't cancel
+        // itself out over an even number of chunks.
+        let mixed = _mm_add_epi64(v, seed);
+        acc = _mm_xor_si128(acc, mixed);
     }
 
     // Process remainder
@@ -164,14 +233,17 @@ unsafe fn hash_sse2(data: &[u8]) -> u64 {
         let mut tail = [0u8; 16];
         tail[..remainder.len()].copy_from_slice(remainder);
         let v = _mm_loadu_si128(tail.as_ptr() as *const __m128i);
-        acc = _mm_xor_si128(acc, v);
+        let mixed = _mm_add_epi64(v, seed);
+        acc = _mm_xor_si128(acc, mixed);
     }
 
     // Reduction: 128-bit → 64-bit
-    let low64 = _mm_extract_epi64(acc, 0) as u64;
-    let high64 = _mm_extract_epi64(acc, 1) as u64;
+    let lanes = [
+        _mm_extract_epi64(acc, 0) as u64,
+        _mm_extract_epi64(acc, 1) as u64,
+    ];
 
-    low64 ^ high64 ^ (data.len() as u64)
+    fold_lanes(&lanes, data.len() as u64)
 }
 
 // Scalar fallback (для систем без SIMD - non-x86_64 architectures)
@@ -590,27 +662,82 @@ mod tests {
     }
 
     #[test]
-    fn hash_tile_collides_between_different_uniform_colors() {
-        // KNOWN LIMITATION, documented rather than papered over: the
-        // XOR-accumulator hash's final reduction is `low64 ^ high64 ^ len`,
-        // and every 256-bit lane XORed in (both the data and the
-        // broadcast seed) has identical low/high 128-bit halves for a
-        // byte-uniform buffer — so low64 and high64 end up equal and cancel
-        // to 0 for ANY flat-colored tile, leaving the hash to depend only
-        // on buffer length. Two *different* solid colors of the same tile
-        // size therefore hash identically. Real screen content is
-        // virtually never perfectly uniform pixel-for-pixel, so this
-        // doesn't manifest in practice — but a mostly-solid UI panel
-        // changing between two flat colors is a real (if narrow) path to a
-        // silently missed diff. See the DEVELOPMENT.md algorithms section.
-        let (width, height) = (10u32, 10u32); // 400 bytes: 12 AVX2 chunks (even) + a symmetric 16B remainder
+    fn hash_tile_no_longer_collides_between_different_uniform_colors() {
+        // Regression test for a real bug found while writing these tests:
+        // XORing the same loaded chunk `v` into the accumulator on every
+        // iteration means, for a byte-uniform buffer (every chunk loads the
+        // identical value), that v's entire contribution cancels to 0 after
+        // an EVEN number of chunks — regardless of what v actually was.
+        // Once that happens, the accumulator no longer depends on the pixel
+        // data at all, only on the (data-independent) seed sequence and
+        // length — so any two solid colors of the same tile size hash
+        // identically. Neither seeding SIMD lanes differently nor mixing
+        // the final reduction differently fixes this on its own (both were
+        // tried and both still collided) — the loop itself has to stop
+        // ever accumulating a position-independent, content-only term.
+        // Fixed by adding (not XOR-ing as an independent term) v and the
+        // per-iteration seed together before folding into the accumulator,
+        // so a repeated v can't cancel out on its own — see hash_avx2's
+        // "mixed" comment.
+        let (width, height) = (10u32, 10u32); // 400 bytes: 12 AVX2 chunks (even) + a 16B remainder — the exact case that used to collide
         let a = vec![0u8; (width * height * 4) as usize];
         let b = vec![255u8; (width * height * 4) as usize];
-        assert_eq!(
+        assert_ne!(
             hash_tile(&a, 0, 0, width, height, width),
             hash_tile(&b, 0, 0, width, height, width),
-            "if this ever fails, the hash algorithm changed and this known limitation may be fixed — update DEVELOPMENT.md's algorithms section accordingly"
         );
+
+        // Also check a buffer size that's an exact multiple of 32 bytes —
+        // no remainder to (accidentally) rescue it, so this is the more
+        // dangerous version of the same bug: it would have collided on
+        // every single call, not just sometimes.
+        let (width2, height2) = (8u32, 8u32); // 256 bytes = 8 AVX2 chunks exactly
+        let a2 = vec![0u8; (width2 * height2 * 4) as usize];
+        let b2 = vec![255u8; (width2 * height2 * 4) as usize];
+        assert_ne!(
+            hash_tile(&a2, 0, 0, width2, height2, width2),
+            hash_tile(&b2, 0, 0, width2, height2, width2),
+        );
+    }
+
+    #[test]
+    fn hash_tile_distinguishes_uniform_colors_across_many_sizes() {
+        // Broader sweep across chunk-count parity/remainder combinations
+        // (odd/even AVX2 chunks, odd/even SSE2 chunks, zero/nonzero
+        // remainder) and several color pairs, on top of the two specific
+        // sizes pinned above — a targeted fix for one size shouldn't be
+        // trusted without checking it generalizes.
+        let colors: &[(u8, u8)] = &[(0, 255), (0, 128), (1, 254), (17, 200), (127, 128)];
+        for side in 1u32..=20 {
+            let (width, height) = (side, side);
+            for &(ca, cb) in colors {
+                let a = vec![ca; (width * height * 4) as usize];
+                let b = vec![cb; (width * height * 4) as usize];
+                assert_ne!(
+                    hash_tile(&a, 0, 0, width, height, width),
+                    hash_tile(&b, 0, 0, width, height, width),
+                    "collision at {width}x{height} between fill {ca} and fill {cb}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn hash_sse2_directly_no_longer_collides_between_uniform_colors() {
+        // Same regression as above, but forcing the SSE2 path directly
+        // (bypassing runtime AVX2 detection) since x86_64 always has SSE2
+        // and this dev machine's own hashes above would otherwise only ever
+        // exercise the AVX2 path.
+        if !is_x86_feature_detected!("sse2") {
+            return; // x86_64 guarantees this, but don't assume in CI images
+        }
+        let (width, height) = (10u32, 10u32); // 400 bytes: 25 SSE2 chunks exactly, no remainder
+        let a = vec![0u8; (width * height * 4) as usize];
+        let b = vec![255u8; (width * height * 4) as usize];
+        let ha = unsafe { hash_sse2(&a) };
+        let hb = unsafe { hash_sse2(&b) };
+        assert_ne!(ha, hb);
     }
 
     #[test]
