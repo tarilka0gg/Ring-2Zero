@@ -30,7 +30,7 @@ The browser client is baked into the binary — there's no separate file to open
    cd Ring-2Zero
    ./install.sh
    ```
-   `install.sh` detects your distro's package manager and installs missing system libraries (asking for confirmation first), finds or installs a C compiler and Rust toolchain, builds a release binary, installs it as `ring-2zero` on `PATH` (`cargo install --path .` under the hood), and adds an `r2zr` alias to whichever shell actually launched it (bash/zsh/fish; anything else falls back to `~/.profile`). Every failure prints what went wrong and how to fix it. Options: `-y`/`--yes` (don't prompt before installing packages), `--pipewire` (build with PipeWire capture support too), `--dry-run` (show what it would do), `--no-alias`. See [Dependencies](#dependencies) below for what it's installing, or [Building](#building) to do it by hand instead.
+   `install.sh` detects your distro's package manager and installs missing system libraries (asking for confirmation first), finds or installs a C compiler and Rust toolchain, builds a release binary, installs it as `ring-2zero` on `PATH` (`cargo install --path .` under the hood), adds an `r2zr` alias to whichever shell actually launched it (bash/zsh/fish; anything else falls back to `~/.profile`), and installs a man page (`man ring-2zero`). Every failure prints what went wrong and how to fix it. Options: `-y`/`--yes` (don't prompt before installing packages), `--pipewire` (build with PipeWire capture support too), `--dry-run` (show what it would do), `--no-alias`. See [Dependencies](#dependencies) below for what it's installing, or [Building](#building) to do it by hand instead.
 
 2. **Run the server**:
    ```bash
@@ -176,6 +176,7 @@ Optional (for `--features pipewire_capture`):
 ```
 install.sh              — dependency detection/install, build, install, shell alias
 CHANGELOG.md            — full version history
+man/ring-2zero.1         — man page, installed by install.sh
 src/
 ├── main.rs               — entry point
 ├── server.rs             — WebSocket + WebRTC server, serves the client page over HTTP(S)

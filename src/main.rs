@@ -51,15 +51,25 @@ fn load_tls_acceptor(
     Ok(Some(TlsAcceptor::from(Arc::new(tls_config))))
 }
 
-/// Block-letter startup banner (bigmono12 figlet-style — thicker strokes
-/// than the original mono12), printed once before anything else — only on
-/// an actual terminal (never into a redirected log/systemd journal, where
-/// ANSI art is just noise) and without color escapes when NO_COLOR is set
-/// (https://no-color.org).
-fn print_banner() {
+/// Whether to use ANSI color: only when stdout is an actual terminal (never
+/// into a redirected log/systemd journal or a pipe like `--help | grep`,
+/// where escape codes are just noise) and NO_COLOR isn't set
+/// (https://no-color.org). Computed once, before we possibly hand stdout
+/// off to a pager — `less -R` still needs these codes in its *input*, it's
+/// our own process's original stdout fd that determines whether a human is
+/// actually looking at a terminal right now.
+fn use_color() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+/// Block-letter startup banner (bigmono12 figlet-style), in `#af3a03`. Empty
+/// when stdout isn't a terminal — the block art is just noise in a
+/// redirected log or a `--help | grep` pipe.
+fn banner_text() -> String {
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
-        return;
+        return String::new();
     }
 
     const LINES: [&str; 12] = [
@@ -76,66 +86,124 @@ fn print_banner() {
         " ██    ██▒  ██████   ██   ███   ███████            ████████  ████████  ████████  ██    ██▒  ██████",
         " ██    ███  ██████   ██   ███    ▒████░            ████████  ████████  ████████  ██    ███  ░████░",
     ];
-    // #af3a03, true color.
-    const COLOR: &str = "\x1b[38;2;175;58;3m";
+    const COLOR: &str = "\x1b[38;2;175;58;3m"; // #af3a03, true color
 
-    let no_color = std::env::var_os("NO_COLOR").is_some();
-
-    println!();
+    let color = use_color();
+    let mut out = String::new();
+    out.push('\n');
     for line in LINES {
-        if no_color {
-            println!("{line}");
+        if color {
+            out.push_str(&format!("{COLOR}{line}\x1b[0m\n"));
         } else {
-            println!("{COLOR}{line}\x1b[0m");
+            out.push_str(line);
+            out.push('\n');
         }
     }
     let subtitle = format!("  Wayland screen streamer over WebRTC · v{}", env!("CARGO_PKG_VERSION"));
-    if no_color {
-        println!("{subtitle}");
+    if color {
+        out.push_str(&format!("{COLOR}{subtitle}\x1b[0m\n"));
     } else {
-        println!("{COLOR}{subtitle}\x1b[0m");
+        out.push_str(&subtitle);
+        out.push('\n');
     }
-    println!();
+    out.push('\n');
+    out
 }
 
-fn print_help() {
-    println!(
-        "ring-2zero — Wayland screen streaming server over WebRTC\n\
-         \n\
-         Captures your screen — DMA-BUF zero-copy on wlroots compositors\n\
-         (niri, sway), or via the PipeWire portal on GNOME/KDE/X11 — and\n\
-         streams it live to any browser over a WebRTC DataChannel. No X11\n\
-         forwarding, no VNC client, just a URL. Tile-based diff encoding\n\
-         with adaptive WebP quality keeps bandwidth low; the browser client\n\
-         is served by this same binary, including over Tailscale/TLS for\n\
-         remote access.\n\
-         \n\
-         USAGE:\n\
-         \x20   ring-2zero [OPTIONS]\n\
-         \x20   r2zr [OPTIONS]           (shorthand alias — set up by install.sh)\n\
-         \n\
-         OPTIONS:\n\
-         \x20   -h, --help       Print this help and exit\n\
-         \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
-         \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
-         \n\
-         Once running, open http://<this-machine>:9001 in a browser — the auth\n\
-         token printed on startup is the connection password. No separate client\n\
-         file or static file server needed, the page is served by this binary.\n\
-         \n\
-         ENVIRONMENT VARIABLES:\n\
-         \x20   RING2ZERO_TOKEN           Fixed auth token (default: random, printed on startup)\n\
-         \x20   RING2ZERO_TLS_CERT/_KEY   PEM cert/key paths to serve wss:// (required for Safari/iOS)\n\
-         \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
-         \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
-         \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
-         \n\
-         Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
-         everything else it does and just add the alias by hand — see its\n\
-         source for the per-shell alias/abbr syntax).\n\
-         \n\
-         See README.md / docs/DEVELOPMENT.md for the full reference."
-    );
+/// Prints the banner directly (unpaged) for a normal run — a pager would
+/// block server startup waiting for the user to quit it, which is only
+/// appropriate for one-shot output like `--help`, not a running server.
+fn print_banner() {
+    print!("{}", banner_text());
+}
+
+fn help_text() -> String {
+    "ring-2zero — Wayland screen streaming server over WebRTC\n\
+     \n\
+     Captures your screen — DMA-BUF zero-copy on wlroots compositors\n\
+     (niri, sway), or via the PipeWire portal on GNOME/KDE/X11 — and\n\
+     streams it live to any browser over a WebRTC DataChannel. No X11\n\
+     forwarding, no VNC client, just a URL. Tile-based diff encoding\n\
+     with adaptive WebP quality keeps bandwidth low; the browser client\n\
+     is served by this same binary, including over Tailscale/TLS for\n\
+     remote access.\n\
+     \n\
+     USAGE:\n\
+     \x20   ring-2zero [OPTIONS]\n\
+     \x20   r2zr [OPTIONS]           (shorthand alias — set up by install.sh)\n\
+     \n\
+     OPTIONS:\n\
+     \x20   -h, --help       Print this help and exit\n\
+     \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
+     \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
+     \n\
+     Once running, open http://<this-machine>:9001 in a browser — the auth\n\
+     token printed on startup is the connection password. No separate client\n\
+     file or static file server needed, the page is served by this binary.\n\
+     \n\
+     ENVIRONMENT VARIABLES:\n\
+     \x20   RING2ZERO_TOKEN           Fixed auth token (default: random, printed on startup)\n\
+     \x20   RING2ZERO_TLS_CERT/_KEY   PEM cert/key paths to serve wss:// (required for Safari/iOS)\n\
+     \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
+     \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
+     \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
+     \n\
+     Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
+     everything else it does and just add the alias by hand — see its\n\
+     source for the per-shell alias/abbr syntax).\n\
+     \n\
+     See README.md / docs/DEVELOPMENT.md for the full reference.\n"
+        .to_string()
+}
+
+/// Shows `text` the way `man` shows a man page: through a pager, starting
+/// at the top, so long output (like --help with the banner) doesn't scroll
+/// past and leave the reader at the bottom. Only pages when stdout is an
+/// actual terminal — a redirected/piped invocation (`--help > f`, `--help |
+/// grep ...`) gets the plain text with no pager involved, since there's no
+/// human on the other end to page for.
+///
+/// Respects $PAGER if set; otherwise uses `less -R -F -X`: -R lets the
+/// banner's raw ANSI color codes through, -F exits immediately instead of
+/// waiting for input if the content fits on one screen, -X skips the
+/// terminal clear-on-exit so the output stays in scrollback afterward —
+/// the same combination `git --help` effectively uses.
+fn print_paged(text: &str) {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdout().is_terminal() {
+        print!("{text}");
+        return;
+    }
+
+    let (program, args): (String, Vec<String>) = match std::env::var("PAGER") {
+        Ok(pager) if !pager.trim().is_empty() => {
+            let mut parts = pager.split_whitespace().map(str::to_string);
+            let program = parts.next().unwrap_or_else(|| "less".to_string());
+            (program, parts.collect())
+        }
+        _ => ("less".to_string(), vec!["-R".to_string(), "-F".to_string(), "-X".to_string()]),
+    };
+
+    let child = std::process::Command::new(&program)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .spawn();
+
+    match child {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+        }
+        Err(_) => {
+            // No pager available (e.g. $PAGER points at something missing,
+            // or `less` isn't installed) — fall back to plain output rather
+            // than losing the content entirely.
+            print!("{text}");
+        }
+    }
 }
 
 #[tokio::main]
@@ -143,8 +211,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_banner();
-        print_help();
+        print_paged(&format!("{}{}", banner_text(), help_text()));
         return Ok(());
     }
 
