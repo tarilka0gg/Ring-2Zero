@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue.svg)](CHANGELOG.md)
+[![Contributing](https://img.shields.io/badge/contributing-CONTRIBUTING.md-blue.svg)](CONTRIBUTING.md)
 
 High-performance Wayland screen streaming server with WebRTC support.
 
