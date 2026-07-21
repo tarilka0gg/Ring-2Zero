@@ -1,0 +1,101 @@
+.TH RING-2ZERO 1 "2026-07-21" "ring-2zero 0.299.2" "User Commands"
+.SH NAME
+ring-2zero \- Wayland screen streaming server over WebRTC
+.SH SYNOPSIS
+.B ring-2zero
+.RI [ OPTIONS ]
+.br
+.B r2zr
+.RI [ OPTIONS ]
+.RB ( shorthand " alias, set up by " install.sh )
+.SH DESCRIPTION
+.B ring-2zero
+captures your screen \(em DMA-BUF zero-copy on wlroots compositors
+(niri, sway), or via the PipeWire portal on GNOME/KDE/X11 \(em and
+streams it live to any browser over a WebRTC DataChannel. No X11
+forwarding, no VNC client, just a URL.
+.PP
+Tile-based diff encoding with adaptive WebP quality keeps bandwidth
+low. The browser client is served by this same binary, on the same
+host/port as the WebSocket signaling channel, including over TLS for
+remote access (see
+.B ENVIRONMENT
+below and the Remote access section of README.md for Tailscale setup).
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.B \-\-no\-adaptive
+Skip the startup CPU benchmark that picks a tile-merging aggressiveness;
+use the default
+.B merge_gap=0
+instead.
+.TP
+.B \-\-debug
+Verbose per-tile/per-frame diagnostics, printed every 100 frames.
+.SH USAGE
+Once running, open
+.B http://<this\-host>:9001
+in a browser. The auth token printed on startup is the connection
+password, prompted for on first load and remembered in the browser's
+.BR localStorage .
+No separate client file or static file server is needed \(em the page
+is served by this same binary.
+.SH ENVIRONMENT
+.TP
+.B RING2ZERO_TOKEN
+Fixed auth token, instead of a fresh random one generated each run.
+.TP
+.B RING2ZERO_TLS_CERT\fR,\fB RING2ZERO_TLS_KEY
+PEM certificate/key file paths to serve
+.B wss://
+instead of
+.BR ws:// .
+Required for Safari/iOS, which refuse WebRTC on an insecure page.
+.TP
+.B RING2ZERO_ICE_INTERFACE
+Restrict ICE candidate gathering to one named network interface (e.g.
+.IR tailscale0 )
+on a multi-homed machine.
+.TP
+.B RING2ZERO_IPV4_ONLY
+Set to any value to exclude IPv6 ICE candidates.
+.TP
+.B RING2ZERO_MAX_FPS
+Cap
+.IR target_fps , " static_tile_fps" ,
+and
+.I dynamic_tile_fps
+uniformly to a given value, clamped to 1\(en1000.
+.TP
+.B RUST_LOG
+Standard
+.B env_logger
+filter syntax; set to
+.I ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug
+for verbose ICE/mDNS connectivity diagnostics.
+.TP
+.B NO_COLOR
+When set, the startup banner and
+.B \-\-help
+output skip ANSI color codes (https://no\-color.org).
+.TP
+.B PAGER
+Pager used for
+.B \-\-help
+output on a terminal; defaults to
+.B "less \-R \-F \-X" .
+.SH FILES
+.TP
+.I ~/.cache/screen\-streamer/cpu_bench.json
+Cached CPU benchmark result from
+.BR \-\-no\-adaptive 's
+opposite (adaptive) startup path, invalidated after 7 days or a CPU/binary
+change.
+.SH SEE ALSO
+Full reference, architecture, and the wire protocol:
+.I README.md
+and
+.I docs/DEVELOPMENT.md
+in the project repository, https://github.com/tarilka0gg/Ring\-2Zero.

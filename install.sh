@@ -367,29 +367,52 @@ fi
 # 7. Shell alias
 # ---------------------------------------------------------------------------
 
+# $SHELL is your registered *login* shell and is frequently stale (set once
+# at login, doesn't update if you exec into a different shell interactively)
+# — the shell that actually matters here is whichever one invoked this
+# script, i.e. our parent process. Detected once, used below by both the
+# alias and the man-page MANPATH setup.
+ppid_comm=""
+if [ -r "/proc/$PPID/comm" ]; then
+    ppid_comm="$(cat "/proc/$PPID/comm" 2>/dev/null)"
+elif command -v ps >/dev/null 2>&1; then
+    ppid_comm="$(ps -o comm= -p "$PPID" 2>/dev/null)"
+fi
+case "$ppid_comm" in
+    fish|zsh|bash) target_shell="$ppid_comm" ;;
+    *) target_shell="$(basename "${SHELL:-bash}")" ;;
+esac
+
+case "$target_shell" in
+    fish) rc_file="$HOME/.config/fish/config.fish" ;;
+    zsh)  rc_file="$HOME/.zshrc" ;;
+    bash) rc_file="$HOME/.bashrc" ;;
+    *)    rc_file="$HOME/.profile" ;;
+esac
+
+# add_rc_line <description> <line-to-add>: appends to $rc_file, skipping if
+# already present. Shared by the alias and MANPATH steps below.
+add_rc_line() {
+    local desc="$1" line="$2"
+    if [ "$DRY_RUN" = 1 ]; then
+        info "[dry-run] would add to $rc_file: $line"
+        return
+    fi
+    mkdir -p "$(dirname "$rc_file")"
+    touch "$rc_file"
+    if grep -qF "$line" "$rc_file" 2>/dev/null; then
+        ok "$desc already present in $rc_file"
+    else
+        printf '\n# %s\n%s\n' "$desc" "$line" >> "$rc_file"
+        ok "Added $desc to $rc_file — open a new shell (or re-source it) to use it"
+    fi
+}
+
 if [ "$WITH_ALIAS" = 1 ]; then
     step "Adding 'r2zr' shell alias"
 
-    # $SHELL is your registered *login* shell and is frequently stale (set
-    # once at login, doesn't update if you exec into a different shell
-    # interactively) — the shell that actually matters here is whichever one
-    # invoked this script, i.e. our parent process.
-    ppid_comm=""
-    if [ -r "/proc/$PPID/comm" ]; then
-        ppid_comm="$(cat "/proc/$PPID/comm" 2>/dev/null)"
-    elif command -v ps >/dev/null 2>&1; then
-        ppid_comm="$(ps -o comm= -p "$PPID" 2>/dev/null)"
-    fi
-    case "$ppid_comm" in
-        fish|zsh|bash) target_shell="$ppid_comm" ;;
-        *) target_shell="$(basename "${SHELL:-bash}")" ;;
-    esac
-
-    rc_file=""
-    alias_line=""
     case "$target_shell" in
         fish)
-            rc_file="$HOME/.config/fish/config.fish"
             # A real `alias` (not `abbr`): abbr only expands when typed
             # interactively at the prompt, so it wouldn't show up under
             # fish's own `alias` listing or work when run non-interactively
@@ -397,35 +420,43 @@ if [ "$WITH_ALIAS" = 1 ]; then
             # it looked broken/missing entirely.
             alias_line="alias r2zr ring-2zero"
             ;;
-        zsh)
-            rc_file="$HOME/.zshrc"
-            alias_line="alias r2zr='ring-2zero'"
-            ;;
-        bash)
-            rc_file="$HOME/.bashrc"
+        zsh|bash)
             alias_line="alias r2zr='ring-2zero'"
             ;;
         *)
             warn "Unrecognized \$SHELL ('$target_shell') — falling back to ~/.profile with a plain POSIX alias."
             warn "If your shell doesn't source ~/.profile for interactive sessions, add this yourself: alias r2zr='ring-2zero'"
-            rc_file="$HOME/.profile"
             alias_line="alias r2zr='ring-2zero'"
             ;;
     esac
 
-    if [ "$DRY_RUN" = 1 ]; then
-        info "[dry-run] would add to $rc_file: $alias_line"
-    else
-        mkdir -p "$(dirname "$rc_file")"
-        touch "$rc_file"
-        if grep -qF "$alias_line" "$rc_file" 2>/dev/null; then
-            ok "Already present in $rc_file"
-        else
-            printf '\n# ring-2zero shortcut\n%s\n' "$alias_line" >> "$rc_file"
-            ok "Added to $rc_file — open a new shell (or re-source it) to use it"
-        fi
-    fi
+    add_rc_line "ring-2zero shortcut" "$alias_line"
 fi
+
+# ---------------------------------------------------------------------------
+# 8. Man page
+# ---------------------------------------------------------------------------
+
+step "Installing man page"
+
+MAN_DIR="$HOME/.local/share/man/man1"
+if [ "$DRY_RUN" = 1 ]; then
+    info "[dry-run] would install man/ring-2zero.1 to $MAN_DIR/ring-2zero.1"
+else
+    mkdir -p "$MAN_DIR"
+    cp "$REPO_DIR/man/ring-2zero.1" "$MAN_DIR/ring-2zero.1"
+    ok "Installed $MAN_DIR/ring-2zero.1"
+fi
+
+# ~/.local/share/man isn't on the default MANPATH on every distro (depends
+# on the local man-db config), so make sure it is rather than leaving
+# `man ring-2zero` to maybe just not find it.
+if [ "$target_shell" = "fish" ]; then
+    manpath_line='set -gx MANPATH $HOME/.local/share/man $MANPATH'
+else
+    manpath_line='export MANPATH="$HOME/.local/share/man:$MANPATH"'
+fi
+add_rc_line "ring-2zero man page" "$manpath_line"
 
 # ---------------------------------------------------------------------------
 # Done
@@ -434,4 +465,4 @@ fi
 step "Done"
 info "Run it with: ${BOLD}${BIN_PATH:-ring-2zero}${RESET}"
 [ "$WITH_ALIAS" = 1 ] && info "...or, in a new shell: ${BOLD}r2zr${RESET}"
-info "Then open http://<this-host>:9001 in a browser. ${BOLD}--help${RESET} for the full flag/env var reference."
+info "Then open http://<this-host>:9001 in a browser. ${BOLD}--help${RESET} (or, in a new shell, ${BOLD}man ring-2zero${RESET}) for the full flag/env var reference."
