@@ -325,6 +325,51 @@ impl Tile {
         let dy = (tile_cy as i32 - center_y as i32).abs();
         dx * dx + dy * dy
     }
+
+    /// Grid-cell bounds (start_tx, start_ty, end_tx, end_ty) this tile covers.
+    /// For a single-cell tile start == end on both axes; a merged tile spans
+    /// every cell from start to end inclusive. Single source of truth for
+    /// this math — it used to be hand-copied independently in stream.rs and
+    /// frame_profiler.rs, which is exactly how the post-merge indexing bugs
+    /// fixed in v0.299.1 happened.
+    pub fn grid_bounds(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> (u32, u32, u32, u32) {
+        let start_tx = self.x / tile_width;
+        let start_ty = self.y / tile_height;
+        let end_tx = ((self.x + self.width - 1) / tile_width).min(tiles_x - 1);
+        let end_ty = ((self.y + self.height - 1) / tile_height).min(tiles_y - 1);
+        (start_tx, start_ty, end_tx, end_ty)
+    }
+
+    /// Index of this tile's representative grid cell (its top-left corner).
+    /// For a merged multi-cell tile this identifies only ONE of the cells it
+    /// covers — see `grid_bounds`/`covered_indices` when every covered cell
+    /// is needed (e.g. ACK-loss recovery), and `is_single_cell` before
+    /// treating this index as uniquely identifying the tile's whole area
+    /// (e.g. per-tile encode caching).
+    pub fn representative_index(&self, tile_width: u32, tile_height: u32, tiles_x: u32) -> usize {
+        (self.y / tile_height * tiles_x + self.x / tile_width) as usize
+    }
+
+    /// Whether this tile covers exactly one grid cell (i.e. wasn't merged
+    /// with neighbors). Only single-cell tiles can be safely cached/recovered
+    /// by their representative index alone.
+    pub fn is_single_cell(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> bool {
+        let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
+        stx == etx && sty == ety
+    }
+
+    /// Every grid-cell index this tile covers (one entry for a single-cell
+    /// tile, up to `MAX_MERGE_TILES_X * MAX_MERGE_TILES_Y` for a merged one).
+    pub fn covered_indices(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> Vec<usize> {
+        let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
+        let mut indices = Vec::with_capacity(((etx - stx + 1) * (ety - sty + 1)) as usize);
+        for ty in sty..=ety {
+            for tx in stx..=etx {
+                indices.push((ty * tiles_x + tx) as usize);
+            }
+        }
+        indices
+    }
 }
 
 // Circular buffer для change history (замість VecDeque для кращої performance)

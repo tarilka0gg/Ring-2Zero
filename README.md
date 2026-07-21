@@ -146,6 +146,15 @@ docs/
 
 ## Changelog
 
+### v0.299.2 (July 2026)
+- **Fixed**: the damage-region skip bypassed hash comparison entirely, so a tile force-reset by `invalidate_tiles`/`invalidate_cache` (v0.299.1's headline fix) still never got re-detected once damage tracking was active and the tile fell outside the current frame's damage regions — it now checks a per-tile force-redetect flag before deferring to the skip.
+- **Fixed**: ACK-loss recovery only re-armed a merged tile's single representative grid cell instead of every cell it covered (up to 4×4=16), so most of a lost merged-tile region could stay stale indefinitely — invalidation now expands to every covered cell.
+- **Fixed**: `invalidate_tiles`/`invalidate_cache` reset hash state but left `last_sent_frame` untouched, so the FPS-throttle interval could still delay the immediate resend the invalidation was meant to trigger.
+- **Fixed**: the ACK-loss epoch tag was read asynchronously in the send loop instead of being stamped when a frame's tiles were produced, racing the epoch bump across the buffered encode channel on a resolution change.
+- **Fixed**: `frame_profiler.rs`'s cache simulation didn't mirror stream.rs's single-cell cache restriction (from v0.299.1) or its per-tile cache lookup, so its cache-hit/timing numbers no longer reflected production behavior.
+- **Changed**: the merged-tile grid-index math (representative cell, single-cell check, covered-cell expansion) is now one shared implementation on `Tile` instead of being hand-copied per call site — the source of several of the above bugs.
+- **Changed**: the `changed_mask`/`damaged_tiles` per-frame scratch buffers are reused across frames instead of being reallocated, and `damaged_tiles` is only reset on frames that actually carry damage info.
+
 ### v0.299.1 (July 2026)
 - **Fixed**: `invalidate_tiles`/`invalidate_cache` (ACK-loss recovery, periodic quality refresh) were silently defeated by the zero-copy half-hash shortcut whenever a tile's pixels weren't actively changing at the moment of invalidation — they now actually force re-detection.
 - **Fixed**: tiles held back by FPS throttling were misclassified as "unchanged" in the per-tile change-history/priority stats, and their hash baseline never advanced — both now update correctly even when the tile isn't sent that frame.

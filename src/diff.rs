@@ -8,6 +8,14 @@ pub struct DiffDetector {
     prev_prev_hashes: Vec<u64>,
     tile_metadata: Vec<TileMetadata>,
     damaged_tiles: Vec<bool>,
+    // Tiles that invalidate_tiles/invalidate_cache forced a hash reset on.
+    // Consulted (and cleared) once by the next detect_changes call so the
+    // damage-region skip below can't bypass hash comparison for them — see
+    // force_redetect_tile's doc comment for why this exists.
+    force_redetect: Vec<bool>,
+    // Persistent scratch buffer for the "did this tile change or get sent
+    // this frame" mask, reused across frames instead of being reallocated.
+    changed_mask: Vec<bool>,
     config: Config,
     frame_count: u64,
     skipped_hashes: u64,
@@ -21,6 +29,8 @@ impl DiffDetector {
             prev_prev_hashes: Vec::new(),
             tile_metadata: Vec::new(),
             damaged_tiles: Vec::new(),
+            force_redetect: Vec::new(),
+            changed_mask: Vec::new(),
             config,
             frame_count: 0,
             skipped_hashes: 0,
@@ -45,6 +55,8 @@ impl DiffDetector {
             self.prev_prev_hashes = vec![0; total_tiles];
             self.tile_metadata.resize(total_tiles, TileMetadata::default());
             self.damaged_tiles = vec![false; total_tiles];
+            self.force_redetect = vec![false; total_tiles];
+            self.changed_mask = vec![false; total_tiles];
         }
 
         // Перевіряємо чи є damage regions від Wayland
@@ -58,9 +70,12 @@ impl DiffDetector {
             }
         }
 
-        // Створюємо набір тайлів що перетинаються з damage regions
-        self.damaged_tiles.iter_mut().for_each(|d| *d = false);
+        // Створюємо набір тайлів що перетинаються з damage regions.
+        // Only touched (and only needs touching) on frames that actually
+        // carry damage info — damaged_tiles is never read when !has_damage,
+        // so resetting it then would just be a wasted O(total_tiles) pass.
         if has_damage {
+            self.damaged_tiles.iter_mut().for_each(|d| *d = false);
             for damage in &frame.damage_regions {
                 // Знаходимо всі тайли що перетинаються з цим damage region
                 let tile_x_start = (damage.x / tile_width).min(self.config.tiles_x - 1);
@@ -98,6 +113,7 @@ impl DiffDetector {
         let prev_prev_hashes_ref = &self.prev_prev_hashes;
         let tile_metadata_ref = &self.tile_metadata;
         let damaged_tiles_ref = &self.damaged_tiles;
+        let force_redetect_ref = &self.force_redetect;
         let frame_count = self.frame_count;
         let config = &self.config;
 
@@ -116,8 +132,16 @@ impl DiffDetector {
                     // frame to compare against — on the very first frame there is
                     // no prior content for the client at all, so every tile must
                     // be considered regardless of what the compositor reports as
-                    // damaged.
-                    if has_damage && !is_first_frame && !damaged_tiles_ref[i] {
+                    // damaged. It also must not apply to a tile invalidate_tiles/
+                    // invalidate_cache just force-reset: those calls zero
+                    // prev_hashes[i] specifically so the next comparison sees a
+                    // change, but this early return never reaches that
+                    // comparison — it would reuse the freshly-zeroed hash as both
+                    // "previous" and "current" and silently swallow the forced
+                    // re-detection (this was the actual root cause of tiles never
+                    // recovering after an ACK-loss invalidation while damage
+                    // tracking was active).
+                    if has_damage && !is_first_frame && !damaged_tiles_ref[i] && !force_redetect_ref[i] {
                         hashes.push((i, prev_hashes_ref[i]));
                         stats.1 += 1; // damage_skipped
                         return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
@@ -221,6 +245,12 @@ impl DiffDetector {
                 },
             );
 
+        // force_redetect_ref has now been read by every tile this frame
+        // (the borrow ends with the .reduce() call above) — clear it so it
+        // only ever bypasses the damage-skip for exactly the one frame
+        // following an invalidation, not indefinitely.
+        self.force_redetect.iter_mut().for_each(|f| *f = false);
+
         let (skipped, damage_skip, skipped_by_fps, dynamic_sent, static_sent) = stats;
 
         // Convert Vec<(index, hash)> to indexed array
@@ -294,17 +324,19 @@ impl DiffDetector {
         // this frame (i.e. excluding both sent tiles and throttled-but-changed
         // tiles). A dense Vec<bool> mask avoids the per-frame HashSet
         // allocation/hashing that a HashSet<usize> would need for a known,
-        // contiguous index range.
-        let mut changed_mask = vec![false; total_tiles];
+        // contiguous index range — reused as a persistent scratch buffer
+        // (like damaged_tiles) instead of reallocated every frame.
+        self.changed_mask.iter_mut().for_each(|c| *c = false);
         for &i in &tile_indices {
-            changed_mask[i] = true;
+            self.changed_mask[i] = true;
         }
         for &(i, _) in &changed_unsent {
-            changed_mask[i] = true;
+            self.changed_mask[i] = true;
         }
 
+        let changed_mask_ref = &self.changed_mask;
         let unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
-            .filter(|&i| !changed_mask[i])
+            .filter(|&i| !changed_mask_ref[i])
             .map(|i| (i, self.tile_metadata[i].unchanged_frames))
             .collect();
 
@@ -368,9 +400,28 @@ impl DiffDetector {
         self.prev_prev_hashes = Vec::new();
         self.tile_metadata.clear();
         self.damaged_tiles.clear();
+        self.force_redetect.clear();
+        self.changed_mask.clear();
         self.frame_count = 0;
         self.skipped_hashes = 0;
         self.total_hashes = 0;
+    }
+
+    /// Resets every piece of state that must move together whenever a tile
+    /// is force-marked for re-detection. All four fields below have to
+    /// change in lockstep: leaving any one of them stale reproduces one of
+    /// the v0.299.1 invalidation bugs (prev_half_hash alone let the
+    /// zero-copy shortcut swallow the reset; force_redetect alone couldn't
+    /// bypass the damage-skip; last_sent_frame alone left the FPS-throttle
+    /// interval blocking the immediate resend this call exists to trigger).
+    fn force_redetect_tile(&mut self, i: usize) {
+        self.tile_metadata[i].prev_half_hash = 0;
+        self.tile_metadata[i].last_sent_frame = 0;
+        self.prev_hashes[i] = 0;
+        self.prev_prev_hashes[i] = 0;
+        if i < self.force_redetect.len() {
+            self.force_redetect[i] = true;
+        }
     }
 
     /// Force re-detection of specific tiles (called when ACK timeout means they were lost in transit).
@@ -379,15 +430,7 @@ impl DiffDetector {
             if i < self.tile_metadata.len() {
                 self.tile_metadata[i].cached_hash = 0;
                 self.tile_metadata[i].cached_encoded = None;
-                // Must also reset prev_half_hash: otherwise, if the tile's
-                // real pixels haven't changed since, detect_changes' zero-copy
-                // shortcut (half_hash == prev_half_hash) reuses the
-                // just-zeroed prev_hashes[i] as both "previous" and "current"
-                // hash, so is_changed comes out false and the invalidation
-                // silently never takes effect.
-                self.tile_metadata[i].prev_half_hash = 0;
-                self.prev_hashes[i] = 0;
-                self.prev_prev_hashes[i] = 0;
+                self.force_redetect_tile(i);
             }
         }
     }
@@ -401,11 +444,7 @@ impl DiffDetector {
             self.tile_metadata[i].cached_encoded = None;
             if self.tile_metadata[i].last_sent_as_dynamic {
                 // prev_prev == prev → is_dynamic = false → high-quality re-encode.
-                // prev_half_hash must be reset too — see invalidate_tiles's comment
-                // above for why, same zero-copy shortcut applies here.
-                self.tile_metadata[i].prev_half_hash = 0;
-                self.prev_hashes[i] = 0;
-                self.prev_prev_hashes[i] = 0;
+                self.force_redetect_tile(i);
             }
         }
     }

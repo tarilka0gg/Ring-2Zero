@@ -98,12 +98,17 @@ impl StreamServer {
             })
         }));
 
-        // encode channel: (header, tiles, encoded, tile_indices, timestamp, elapsed_ms)
+        // encode channel: (header, tiles, encoded, ack_indices, epoch, timestamp, elapsed_ms)
+        // ack_indices carries EVERY grid cell covered by `tiles` (not just one
+        // representative cell per merged tile) and epoch is stamped by the
+        // processing thread at production time — both needed for correct
+        // ACK-loss recovery, see the comments at their write sites below.
         let (encode_tx, mut encode_rx) = tokio::sync::mpsc::channel::<(
             Option<(u32, u32)>,
             Vec<Tile>,
             Vec<Vec<u8>>,
             Vec<usize>,
+            u64,
             Instant,
             f64,
         )>(4);
@@ -160,6 +165,16 @@ impl StreamServer {
                     None
                 };
 
+                // Stamped once per iteration, in this thread, right after any
+                // resolution-triggered bump above, and carried through the
+                // encode_tx channel with this frame's own tiles. Reading it
+                // here — instead of asynchronously in the send loop, which
+                // processes frames off a buffered (capacity-4) channel — means
+                // a frame's epoch always matches the tile grid its indices
+                // actually describe, even if a resize happens while older
+                // frames are still queued for sending.
+                let current_epoch = epoch_thread.load(Ordering::Relaxed);
+
                 let force_full_refresh = last_full_refresh.elapsed() >= full_refresh_interval;
                 if force_full_refresh {
                     diff_detector.invalidate_cache();
@@ -170,7 +185,7 @@ impl StreamServer {
 
                 if changed_tiles.is_empty() {
                     if let Some(size) = send_header {
-                        if encode_tx.blocking_send((Some(size), vec![], vec![], vec![], Instant::now(), 0.0)).is_err() {
+                        if encode_tx.blocking_send((Some(size), vec![], vec![], vec![], current_epoch, Instant::now(), 0.0)).is_err() {
                             break;
                         }
                     }
@@ -193,7 +208,7 @@ impl StreamServer {
                 let mut tiles_with_data: Vec<(Tile, usize, f32)> = merged_tiles
                     .iter()
                     .map(|tile| {
-                        let tile_idx = (tile.y / tile_height * config.tiles_x + tile.x / tile_width) as usize;
+                        let tile_idx = tile.representative_index(tile_width, tile_height, config.tiles_x);
                         let metadata = diff_detector.get_metadata(tile_idx);
                         let priority = Self::calculate_priority_static(tile, metadata, width, height, &config);
                         (*tile, tile_idx, priority)
@@ -211,18 +226,24 @@ impl StreamServer {
                 // covered cell has since changed. Restrict the cache
                 // fast-path to genuinely single-cell tiles, where the
                 // representative hash actually covers the whole tile.
-                let is_single_cell = |tile: &Tile| {
-                    let start_tx = tile.x / tile_width;
-                    let start_ty = tile.y / tile_height;
-                    let end_tx = (tile.x + tile.width - 1) / tile_width;
-                    let end_ty = (tile.y + tile.height - 1) / tile_height;
-                    start_tx == end_tx && start_ty == end_ty
-                };
+                let is_single_cell = |tile: &Tile| tile.is_single_cell(tile_width, tile_height, config.tiles_x, tiles_y);
 
                 tiles_with_data.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
                 let sorted_tiles: Vec<Tile> = tiles_with_data.iter().map(|(t, _, _)| *t).collect();
                 let sorted_tile_indices: Vec<usize> = tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
+
+                // Every original grid cell covered by this frame's tiles, for
+                // ACK-loss recovery: unlike sorted_tile_indices (one
+                // representative cell per tile, used only for cache
+                // bookkeeping below), invalidate_tiles needs ALL cells a lost
+                // merged tile spanned — otherwise up to 15/16 of a lost 4x4
+                // merged region would keep its stale content forever, since
+                // only the one representative cell would ever get re-armed.
+                let ack_indices: Vec<usize> = sorted_tiles
+                    .iter()
+                    .flat_map(|tile| tile.covered_indices(tile_width, tile_height, config.tiles_x, tiles_y))
+                    .collect();
 
                 let tile_hashes: Vec<u64> = sorted_tile_indices.iter()
                     .map(|&idx| diff_detector.get_current_hashes()[idx])
@@ -351,7 +372,7 @@ impl StreamServer {
                 let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 let timestamp = Instant::now();
 
-                if encode_tx.blocking_send((send_header, sorted_tiles, encoded, sorted_tile_indices, timestamp, elapsed_ms)).is_err() {
+                if encode_tx.blocking_send((send_header, sorted_tiles, encoded, ack_indices, current_epoch, timestamp, elapsed_ms)).is_err() {
                     break;
                 }
 
@@ -361,14 +382,16 @@ impl StreamServer {
 
         // --- Async send loop with ACK tracking ---
         let mut frame_seq: u32 = 0;
-        // seq → (sent_at, epoch, tile_indices)
+        // seq → (sent_at, epoch, ack_indices) — ack_indices covers every grid
+        // cell in the frame's tiles, and epoch is the value stamped by the
+        // processing thread when it produced this frame (see encode_tx above).
         let mut pending_acks: HashMap<u32, (Instant, u64, Vec<usize>)> = HashMap::new();
         let ack_timeout = Duration::from_millis(150);
 
         let mut frame_count = 0u64;
         let mut avg_ms = 0.0f64;
 
-        while let Some((header, tiles, encoded, tile_indices, timestamp, elapsed_ms)) = encode_rx.recv().await {
+        while let Some((header, tiles, encoded, ack_indices, frame_epoch, timestamp, elapsed_ms)) = encode_rx.recv().await {
             // Drain incoming ACKs
             while let Ok(acked_seq) = ack_rx.try_recv() {
                 pending_acks.remove(&acked_seq);
@@ -415,7 +438,7 @@ impl StreamServer {
                 seq_pkt[6..10].copy_from_slice(&(tiles.len() as u32).to_le_bytes());
                 data_channel.send(&Bytes::copy_from_slice(&seq_pkt)).await?;
 
-                pending_acks.insert(seq, (Instant::now(), epoch_async.load(Ordering::Relaxed), tile_indices));
+                pending_acks.insert(seq, (Instant::now(), frame_epoch, ack_indices));
 
                 let queue_time = timestamp.elapsed();
                 let send_start = Instant::now();
