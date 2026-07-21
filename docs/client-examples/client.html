@@ -304,12 +304,15 @@
   }
 
   // Server address override: open this page as client.html?server=100.x.x.x:9001
-  // to connect to a different host. Defaults to localhost so the plain URL
-  // (no query params at all) works out of the box for local/same-machine
-  // use; a remote deployment should bookmark the URL with ?server= set to
-  // its own Tailscale hostname (or edit this default for its own copy).
+  // to connect to a different host than the one it was loaded from — e.g.
+  // when this file is opened directly (file://, no location.host at all) or
+  // hosted on a separate static server from the WebSocket backend. When the
+  // ring-2zero server serves this page itself (the normal case — it's
+  // embedded in the binary), location.host is already exactly the right
+  // host:port, whether that's localhost or a Tailscale hostname, so no query
+  // param is needed at all.
   const pageParams = new URLSearchParams(location.search);
-  const wsHost = pageParams.get('server') || 'localhost:9001';
+  const wsHost = pageParams.get('server') || location.host || 'localhost:9001';
   // Match the page's own scheme: a page loaded over https must use wss (Safari
   // blocks ws:// as mixed content from a secure page, and requires https for
   // WebRTC to work at all).
