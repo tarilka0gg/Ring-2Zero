@@ -1,6 +1,6 @@
 # Ring-2Zero
 
-[![CI](https://github.com/tarilka0gg/ring-2zero/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/ring-2zero/actions/workflows/ci.yml)
+[![CI](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 High-performance Wayland screen streaming server with WebRTC support.
@@ -13,26 +13,44 @@ High-performance Wayland screen streaming server with WebRTC support.
 - **Tile-based diff encoding** with intelligent change detection
 - **Fast WebP compression** with adaptive quality
 - **WebRTC DataChannel** streaming to browser clients
-- **ACK feedback system** — client confirms received frames, server invalidates lost tiles
+- **ACK feedback system** — client confirms received frames, server invalidates and re-sends lost tiles
 - **Auto-reconnect** — WebSocket stays alive across WebRTC re-negotiations
 - **SIMD optimizations** — AVX2/SSE2 for hashing, tile extraction, BGRX→RGBA conversion
 - **Parallel encoding pool** with worker threads
 
-## Performance
+## Quick start
 
-Benchmarks with fast-webp encoding (v0.277, July 2026, i7-14650HX):
+1. **Install system dependencies** — see [Dependencies](#dependencies) below for the full list and per-distro package names.
 
-| Scenario | Time/Frame | FPS | Pipeline Breakdown |
-|----------|-----------|-----|--------------------|
-| 🟢 Static content | 0.13 ms | **7968 FPS** | 100% diff detection |
-| 🟡 Moderate activity | 0.47 ms | **2142 FPS** | 31% diff, 3% merge, 66% encode |
-| 🟠 Active work | 0.63 ms | **1589 FPS** | 39% diff, 3% merge, 58% encode |
-| 🔴 Video window | 0.52 ms | **1935 FPS** | 37% diff, 3% merge, 60% encode |
+2. **Build**:
+   ```bash
+   git clone https://github.com/tarilka0gg/Ring-2Zero.git
+   cd Ring-2Zero
+   cargo build --release
+   ```
+   Not on a wlroots compositor (niri, sway)? Add `--features pipewire_capture` — see [Building](#building).
 
-Key numbers:
-- **Tile merging**: 83–99% tile reduction (e.g., 20 627 → 247 tiles)
-- **Cache hits**: 41–67% tiles served without re-encoding
-- **DMA-BUF vs SHM**: eliminates one kernel copy per frame on wlroots compositors
+3. **Run the server**:
+   ```bash
+   ./target/release/ring-2zero
+   ```
+   The first run benchmarks your CPU's WebP encoding speed to pick a sensible tile-merging setting, and caches the result (`~/.cache/screen-streamer/cpu_bench.json`) so it only costs a couple seconds once. Skip it with `--no-adaptive`.
+
+   Startup prints what you need to connect:
+   ```
+   WebRTC signaling server (WebSocket): ws://0.0.0.0:9001
+   TLS disabled — set RING2ZERO_TLS_CERT/RING2ZERO_TLS_KEY for wss:// (required for Safari/iOS remote access)
+   Auth token: 3f9a1c...
+   Connect clients with: client.html?server=<host>:9001 (password prompt uses the token above)
+   ```
+
+4. **Open the client**:
+   ```bash
+   xdg-open docs/client-examples/client.html
+   ```
+   On first load it prompts for the auth token printed above — paste it once, it's remembered in the browser's `localStorage` from then on.
+
+5. You should now see your screen streaming in the browser tab. To view it from *another* device (phone, laptop, over the internet), see [Remote access](#remote-access).
 
 ## Building
 
@@ -47,15 +65,28 @@ cargo build --release --features pipewire_capture
 CC=/usr/lib/llvm/22/bin/clang cargo build --release
 ```
 
-## Running
+## Configuration
 
-```bash
-# Start the server (default: ws://localhost:9001)
-./target/release/ring-2zero
+Everything is configured via environment variables plus two CLI flags — no config file, so it behaves the same run directly, under systemd, or in a container.
 
-# Open the browser client
-xdg-open docs/client-examples/client.html
-```
+| Variable | Default | Purpose |
+|---|---|---|
+| `RING2ZERO_TOKEN` | random, printed on startup | Fixed auth token instead of a fresh random one each run — set this if you want to script reconnects without re-reading stdout. |
+| `RING2ZERO_TLS_CERT` / `RING2ZERO_TLS_KEY` | unset (plaintext `ws://`) | PEM cert/key paths to serve `wss://` instead. Required for Safari/iOS — see [Remote access](#remote-access). |
+| `RING2ZERO_ICE_INTERFACE` | unset (all interfaces) | Restrict ICE candidate gathering to one named interface (e.g. `tailscale0`) on multi-homed machines. |
+| `RING2ZERO_IPV4_ONLY` | unset (dual-stack) | Set to any value to exclude IPv6 ICE candidates — works around a dual-stack candidate-selection issue on some hosts. Don't set this on an IPv6-only path, it'll leave you with zero candidates. |
+| `RING2ZERO_MAX_FPS` | unset | Caps `target_fps`/`static_tile_fps`/`dynamic_tile_fps` uniformly to N (clamped to 1–1000) — a quick bandwidth-constrained testing knob. |
+
+CLI flags:
+
+| Flag | Effect |
+|---|---|
+| `--no-adaptive` | Skip the startup CPU benchmark, use the default `merge_gap=0`. |
+| `--debug` | Verbose per-tile/per-frame stats every 100 frames. |
+
+`RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection.
+
+Everything else (tile grid size, WebP quality range, priority weights, per-mode FPS) is a compile-time default in `Config` — see `src/config.rs` and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference) for the full field reference.
 
 ## Remote access
 
@@ -107,6 +138,24 @@ This guards the signaling handshake itself, but is still no substitute for
 network-level isolation — prefer keeping the port reachable only over a
 VPN (like Tailscale above) rather than a public port-forward.
 
+## Performance
+
+Benchmarks with fast-webp encoding (v0.277, July 2026, i7-14650HX):
+
+| Scenario | Time/Frame | FPS | Pipeline Breakdown |
+|----------|-----------|-----|--------------------|
+| 🟢 Static content | 0.13 ms | **7968 FPS** | 100% diff detection |
+| 🟡 Moderate activity | 0.47 ms | **2142 FPS** | 31% diff, 3% merge, 66% encode |
+| 🟠 Active work | 0.63 ms | **1589 FPS** | 39% diff, 3% merge, 58% encode |
+| 🔴 Video window | 0.52 ms | **1935 FPS** | 37% diff, 3% merge, 60% encode |
+
+Key numbers:
+- **Tile merging**: 83–99% tile reduction (e.g., 20 627 → 247 tiles)
+- **Cache hits**: 41–67% tiles served without re-encoding
+- **DMA-BUF vs SHM**: eliminates one kernel copy per frame on wlroots compositors
+
+Run `cargo run --release --bin frame_profiler --features bench_tools` for a live breakdown on your own hardware — see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#benchmarking--profiling) for the rest of the profiling tools.
+
 ## Dependencies
 
 System libraries required:
@@ -122,27 +171,32 @@ Optional (for `--features pipewire_capture`):
 
 ```
 src/
-├── main.rs              — entry point
-├── server.rs            — WebSocket + WebRTC server
-├── stream.rs            — streaming loop, ACK system
+├── main.rs               — entry point
+├── server.rs             — WebSocket + WebRTC server
+├── stream.rs             — streaming loop, ACK system
 ├── capture/
-│   ├── mod.rs           — backend auto-detection
-│   ├── wlr.rs           — wlr-screencopy (DMA-BUF + SHM fallback)
-│   └── pipewire.rs      — PipeWire via portal (feature-gated)
-├── diff.rs              — tile change detection
-├── encoder.rs           — WebP encoding + tile merging
-├── encoding_pool.rs     — parallel worker pool
-├── tile.rs              — tile hashing (AVX2/SSE2)
-├── tile_extract.rs      — tile extraction (AVX2/SSE2)
-├── convert.rs           — BGRX→RGBA (AVX2/SSE2)
-├── config.rs            — configuration + CPU benchmark cache
-└── shm.rs               — shared memory buffer (memfd)
+│   ├── mod.rs            — backend auto-detection
+│   ├── wlr.rs            — wlr-screencopy (DMA-BUF + SHM fallback)
+│   └── pipewire.rs       — PipeWire via portal (feature-gated)
+├── diff.rs               — tile change detection
+├── encoder.rs            — WebP encoding + tile merging
+├── encoding_pool.rs      — parallel worker pool
+├── tile.rs               — Tile/TileMetadata, hashing (AVX2/SSE2)
+├── tile_extract.rs       — tile extraction (AVX2/SSE2)
+├── convert.rs            — BGRX→RGBA (AVX2/SSE2)
+├── config.rs             — configuration + CPU benchmark cache
+├── webrtc_connection.rs  — PeerConnection/DataChannel setup
+├── signaling.rs          — SDP offer/answer + ICE candidate exchange
+└── shm.rs                — shared memory buffer (memfd)
 src_c/
-└── pw_capture.c         — PipeWire + D-Bus portal C helper
+└── pw_capture.c          — PipeWire + D-Bus portal C helper
 docs/
+├── DEVELOPMENT.md        — architecture, config/protocol reference, troubleshooting
 └── client-examples/
-    └── client.html      — browser WebRTC client
+    └── client.html       — browser WebRTC client
 ```
+
+For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.md](CONTRIBUTING.md); for architecture, the wire protocol, key algorithms, and troubleshooting see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Changelog
 
