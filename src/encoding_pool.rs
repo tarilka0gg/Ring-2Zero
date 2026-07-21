@@ -114,3 +114,32 @@ impl Drop for EncodingPool {
         // No need to explicitly drop - the clone() was causing the leak!
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tile_buffer_pool::TileBufferPool;
+
+    #[test]
+    fn submitted_tasks_come_back_with_matching_indices_and_encoded_data() {
+        let buffer_pool = TileBufferPool::new(4 * 4 * 4, 2);
+        let pool = EncodingPool::new(2, buffer_pool);
+
+        for idx in 0..3usize {
+            pool.submit(EncodingTask {
+                tile: Tile::new(0, 0, 4, 4, 50.0),
+                tile_data: vec![128u8; 4 * 4 * 4],
+                tile_idx: idx,
+            }).unwrap();
+        }
+
+        let mut results = pool.collect_results(3);
+        results.sort_by_key(|r| r.tile_idx);
+
+        assert_eq!(results.len(), 3);
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r.tile_idx, i);
+            assert!(!r.data.is_empty(), "encoded tile {i} should produce non-empty WebP bytes");
+        }
+    }
+}

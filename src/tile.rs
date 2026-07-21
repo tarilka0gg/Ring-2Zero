@@ -471,3 +471,199 @@ impl Default for TileMetadata {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_bounds_single_cell() {
+        let tile = Tile::new(40, 20, 20, 10, 5.0);
+        assert_eq!(tile.grid_bounds(20, 10, 10, 10), (2, 2, 2, 2));
+    }
+
+    #[test]
+    fn grid_bounds_merged_region() {
+        let tile = Tile::new(20, 10, 40, 20, 5.0); // 2x2 cells starting at (1,1)
+        assert_eq!(tile.grid_bounds(20, 10, 10, 10), (1, 1, 2, 2));
+    }
+
+    #[test]
+    fn grid_bounds_clamps_to_grid_edge() {
+        let tile = Tile::new(0, 0, 1000, 1000, 5.0);
+        assert_eq!(tile.grid_bounds(20, 10, 5, 5), (0, 0, 4, 4));
+    }
+
+    #[test]
+    fn representative_index_is_top_left_cell() {
+        let tile = Tile::new(40, 20, 20, 10, 5.0);
+        assert_eq!(tile.representative_index(20, 10, 10), 22); // ty=2, tx=2 -> 2*10+2
+    }
+
+    #[test]
+    fn is_single_cell_true_for_unmerged_tile() {
+        let tile = Tile::new(20, 10, 20, 10, 5.0);
+        assert!(tile.is_single_cell(20, 10, 10, 10));
+    }
+
+    #[test]
+    fn is_single_cell_false_for_merged_tile() {
+        let tile = Tile::new(20, 10, 40, 20, 5.0);
+        assert!(!tile.is_single_cell(20, 10, 10, 10));
+    }
+
+    #[test]
+    fn covered_indices_single_cell_has_one_entry() {
+        let tile = Tile::new(20, 10, 20, 10, 5.0);
+        assert_eq!(tile.covered_indices(20, 10, 10, 10), vec![11]); // ty=1,tx=1 -> 1*10+1
+    }
+
+    #[test]
+    fn covered_indices_matches_every_cell_in_a_merged_region() {
+        let tile = Tile::new(20, 10, 40, 20, 5.0); // covers (1,1),(2,1),(1,2),(2,2)
+        let mut indices = tile.covered_indices(20, 10, 10, 10);
+        indices.sort_unstable();
+        assert_eq!(indices, vec![11, 12, 21, 22]);
+    }
+
+    #[test]
+    fn covered_indices_matches_max_merge_region_size() {
+        // 4x4 grid cells (the largest a single TileMerger output can span)
+        let tile = Tile::new(0, 0, 80, 40, 5.0);
+        assert_eq!(tile.covered_indices(20, 10, 10, 10).len(), 16);
+    }
+
+    #[test]
+    fn distance_from_center_is_zero_at_center() {
+        let tile = Tile::new(40, 40, 20, 20, 5.0); // tile center is (50,50)
+        assert_eq!(tile.distance_from_center(50, 50), 0);
+    }
+
+    #[test]
+    fn circular_buffer_tracks_count_ones_within_capacity() {
+        let mut buf = CircularBuffer::new(4);
+        buf.push(true);
+        buf.push(false);
+        buf.push(true);
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.count_ones(), 2);
+    }
+
+    #[test]
+    fn circular_buffer_evicts_oldest_beyond_capacity() {
+        let mut buf = CircularBuffer::new(2);
+        buf.push(true);
+        buf.push(true);
+        buf.push(false); // evicts the first `true`
+        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.count_ones(), 1);
+    }
+
+    #[test]
+    fn circular_buffer_caps_capacity_at_64() {
+        let mut buf = CircularBuffer::new(1000);
+        for _ in 0..100 {
+            buf.push(true);
+        }
+        assert_eq!(buf.len(), 64);
+        assert_eq!(buf.count_ones(), 64);
+    }
+
+    #[test]
+    fn tile_metadata_update_frequency_is_ratio_of_changes() {
+        let mut meta = TileMetadata::default();
+        meta.change_history.push(true);
+        meta.change_history.push(true);
+        meta.change_history.push(false);
+        meta.change_history.push(false);
+        assert_eq!(meta.update_frequency(), 0.5);
+    }
+
+    #[test]
+    fn hash_tile_is_deterministic() {
+        let (width, height) = (8u32, 4u32);
+        let rgba = vec![42u8; (width * height * 4) as usize];
+        assert_eq!(
+            hash_tile(&rgba, 0, 0, width, height, width),
+            hash_tile(&rgba, 0, 0, width, height, width)
+        );
+    }
+
+    #[test]
+    fn hash_tile_collides_between_different_uniform_colors() {
+        // KNOWN LIMITATION, documented rather than papered over: the
+        // XOR-accumulator hash's final reduction is `low64 ^ high64 ^ len`,
+        // and every 256-bit lane XORed in (both the data and the
+        // broadcast seed) has identical low/high 128-bit halves for a
+        // byte-uniform buffer — so low64 and high64 end up equal and cancel
+        // to 0 for ANY flat-colored tile, leaving the hash to depend only
+        // on buffer length. Two *different* solid colors of the same tile
+        // size therefore hash identically. Real screen content is
+        // virtually never perfectly uniform pixel-for-pixel, so this
+        // doesn't manifest in practice — but a mostly-solid UI panel
+        // changing between two flat colors is a real (if narrow) path to a
+        // silently missed diff. See the DEVELOPMENT.md algorithms section.
+        let (width, height) = (10u32, 10u32); // 400 bytes: 12 AVX2 chunks (even) + a symmetric 16B remainder
+        let a = vec![0u8; (width * height * 4) as usize];
+        let b = vec![255u8; (width * height * 4) as usize];
+        assert_eq!(
+            hash_tile(&a, 0, 0, width, height, width),
+            hash_tile(&b, 0, 0, width, height, width),
+            "if this ever fails, the hash algorithm changed and this known limitation may be fixed — update DEVELOPMENT.md's algorithms section accordingly"
+        );
+    }
+
+    #[test]
+    fn hash_tile_differs_for_different_pixel_content() {
+        let (width, height) = (8u32, 4u32);
+        let a = vec![0u8; (width * height * 4) as usize];
+        let mut b = a.clone();
+        b[0] = 255;
+        assert_ne!(
+            hash_tile(&a, 0, 0, width, height, width),
+            hash_tile(&b, 0, 0, width, height, width)
+        );
+    }
+
+    #[test]
+    fn hash_tile_half_is_blind_to_an_unsampled_row() {
+        // hash_tile_half samples rows y, y+2, y+4, ... — a change confined
+        // to row y+1 (not sampled) must not move the half-hash.
+        let (width, height) = (4u32, 4u32);
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let before = hash_tile_half(&rgba, 0, 0, width, height, width);
+        let row1_offset = (width * 4) as usize; // start of row 1
+        rgba[row1_offset] = 255;
+        let after = hash_tile_half(&rgba, 0, 0, width, height, width);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn hash_tile_half_changes_when_a_sampled_row_changes() {
+        let (width, height) = (4u32, 4u32);
+        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let before = hash_tile_half(&rgba, 0, 0, width, height, width);
+        rgba[0] = 255; // row 0 is always sampled
+        let after = hash_tile_half(&rgba, 0, 0, width, height, width);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn find_changed_tiles_matches_expected_indices() {
+        let prev = vec![1u64, 2, 3, 4, 5, 6, 7, 8, 9];
+        let mut new = prev.clone();
+        new[2] = 99;
+        new[7] = 100;
+        let mut changed = find_changed_tiles(&prev, &new);
+        changed.sort_unstable();
+        assert_eq!(changed, vec![2, 7]);
+    }
+
+    #[test]
+    fn increment_unchanged_counters_increments_every_element() {
+        // 9 elements to exercise both the AVX2 8-wide path and its remainder.
+        let mut counters = vec![0u32, 5, 10, 63, 64, 100, 1000, 2, 3];
+        increment_unchanged_counters(&mut counters);
+        assert_eq!(counters, vec![1, 6, 11, 64, 65, 101, 1001, 3, 4]);
+    }
+}

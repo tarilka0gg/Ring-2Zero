@@ -594,3 +594,40 @@ impl FrameStats {
         Self { tiles_sent, total_kbits }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tile::TileMetadata;
+
+    #[test]
+    fn priority_is_higher_near_screen_center() {
+        let config = Config::default();
+        let metadata = TileMetadata::default();
+        let center_tile = Tile::new(940, 520, 40, 40, 5.0); // near the center of 1920x1080
+        let corner_tile = Tile::new(0, 0, 40, 40, 5.0);
+
+        let center = StreamServer::calculate_priority_static(&center_tile, &metadata, 1920, 1080, &config);
+        let corner = StreamServer::calculate_priority_static(&corner_tile, &metadata, 1920, 1080, &config);
+        assert!(center > corner, "a tile near the center should score higher than one at the corner");
+    }
+
+    #[test]
+    fn priority_increases_with_change_frequency() {
+        let config = Config::default();
+        let tile = Tile::new(0, 0, 40, 40, 5.0);
+
+        let mut quiet = TileMetadata::default();
+        for _ in 0..10 {
+            quiet.change_history.push(false);
+        }
+        let mut busy = TileMetadata::default();
+        for _ in 0..10 {
+            busy.change_history.push(true);
+        }
+
+        let quiet_priority = StreamServer::calculate_priority_static(&tile, &quiet, 1920, 1080, &config);
+        let busy_priority = StreamServer::calculate_priority_static(&tile, &busy, 1920, 1080, &config);
+        assert!(busy_priority > quiet_priority, "a tile that keeps changing should score higher than one that never does");
+    }
+}

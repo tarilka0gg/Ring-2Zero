@@ -158,3 +158,44 @@ pub fn convert_bgrx_to_rgba(src: &[u8], width: u32, height: u32) -> Vec<u8> {
     convert_bgrx_to_rgba_inplace(src, width, height, &mut rgba);
     rgba
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_a_single_pixel_correctly() {
+        let src = [10u8, 20, 30, 99]; // B=10 G=20 R=30 X=ignored
+        let dst = convert_bgrx_to_rgba(&src, 1, 1);
+        assert_eq!(dst, vec![30, 20, 10, 255]); // R,G,B,A
+    }
+
+    #[test]
+    fn converts_various_pixel_counts_correctly() {
+        // Exercise the AVX2 (8px/iter), SSE2 (4px/iter), and scalar
+        // remainder paths at their boundaries.
+        for &pixels in &[1usize, 3, 4, 7, 8, 9, 15, 16, 17, 33, 100] {
+            let mut src = Vec::with_capacity(pixels * 4);
+            for i in 0..pixels {
+                src.extend_from_slice(&[(i * 3) as u8, (i * 5) as u8, (i * 7) as u8, 0xAA]);
+            }
+            let dst = convert_bgrx_to_rgba(&src, pixels as u32, 1);
+            assert_eq!(dst.len(), pixels * 4);
+            for i in 0..pixels {
+                let s = i * 4;
+                assert_eq!(dst[s], src[s + 2], "R mismatch at pixel {i} for {pixels} pixels");
+                assert_eq!(dst[s + 1], src[s + 1], "G mismatch at pixel {i} for {pixels} pixels");
+                assert_eq!(dst[s + 2], src[s], "B mismatch at pixel {i} for {pixels} pixels");
+                assert_eq!(dst[s + 3], 255, "alpha must always be opaque at pixel {i} for {pixels} pixels");
+            }
+        }
+    }
+
+    #[test]
+    fn inplace_variant_resizes_a_stale_destination_buffer() {
+        let src = [1u8, 2, 3, 4, 5, 6, 7, 8]; // 2 pixels
+        let mut dst = vec![0u8; 999]; // stale, oversized buffer
+        convert_bgrx_to_rgba_inplace(&src, 2, 1, &mut dst);
+        assert_eq!(dst, vec![3, 2, 1, 255, 7, 6, 5, 255]);
+    }
+}

@@ -62,3 +62,30 @@ impl Drop for ShmBuffer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::io::AsRawFd;
+
+    #[test]
+    fn new_buffer_has_the_requested_size_and_starts_zeroed() {
+        let buf = ShmBuffer::new(4096).expect("memfd_create should work in the test sandbox");
+        assert_eq!(buf.as_slice().len(), 4096);
+        assert!(buf.as_slice().iter().all(|&b| b == 0), "a freshly ftruncate'd memfd should read as all zeros");
+    }
+
+    #[test]
+    fn fd_is_a_valid_descriptor() {
+        let buf = ShmBuffer::new(4096).unwrap();
+        assert!(buf.fd().as_raw_fd() >= 0);
+    }
+
+    #[test]
+    fn different_buffers_get_different_sizes_correctly() {
+        let small = ShmBuffer::new(64).unwrap();
+        let large = ShmBuffer::new(1 << 20).unwrap();
+        assert_eq!(small.as_slice().len(), 64);
+        assert_eq!(large.as_slice().len(), 1 << 20);
+    }
+}
