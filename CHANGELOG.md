@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.300.0 (July 2026)
+- **Added**: `install.sh` — detects the system package manager, checks/installs the required libraries and a C compiler, installs Rust if missing, builds and installs the binary, adds an `r2zr` shell alias (bash/zsh/fish), and installs a `man ring-2zero` page.
+- **Added**: a real man(1) page (`man/ring-2zero.1`) covering the same ground as `--help`.
+- **Added**: a startup splash banner (block-letter wordmark), shown on an actual terminal only, colorless when `NO_COLOR` is set.
+- **Changed**: `--help` now goes through a pager (`less -R -F -X`, or `$PAGER`) when stdout is a terminal, opening at the top like `man` — the banner used to scroll off the top of a normal-height terminal before you could read it. Piped/redirected `--help` output is untouched (plain text, no pager).
+- **Changed**: `Cargo.lock` is now committed instead of gitignored — this is a binary application, so a reproducible dependency set matters more than the flexibility a library gets from omitting it.
+- **Added**: 70 unit tests across every previously-untested module (`diff.rs`, `stream.rs`, `encoder.rs`, `tile.rs`, `config.rs`, `server.rs`, `convert.rs`, `encoding_pool.rs`, `shm.rs`, `frame.rs`, `error.rs`), including regression tests for the two `invalidate_tiles`/throttling bugs fixed in v0.299.1/.2. Also found and documented (not fixed) a real hash collision: `hash_tile` can hash two *different* solid-color tiles of the same size identically, since the XOR-accumulator's `low64 ^ high64` reduction cancels to 0 for any byte-uniform buffer — narrow in practice (real screen content is rarely perfectly uniform), but real.
+- **Changed**: documentation overhaul — README gained a real Quick Start tutorial and a full env var/CLI flag reference; `docs/DEVELOPMENT.md` replaced three stale, pre-0.299 docs files with one architecture/protocol/algorithm/troubleshooting reference; full version history moved out of README into this file.
+- **Removed**: tracked build artifacts (`librust_out.rlib`, `test_benchmark.rs`) and three superseded client-examples HTML drafts that predated `client.html`.
+
 ## v0.299.2 (July 2026)
 - **Fixed**: the damage-region skip bypassed hash comparison entirely, so a tile force-reset by `invalidate_tiles`/`invalidate_cache` (v0.299.1's headline fix) still never got re-detected once damage tracking was active and the tile fell outside the current frame's damage regions — it now checks a per-tile force-redetect flag before deferring to the skip.
 - **Fixed**: ACK-loss recovery only re-armed a merged tile's single representative grid cell instead of every cell it covered (up to 4×4=16), so most of a lost merged-tile region could stay stale indefinitely — invalidation now expands to every covered cell.

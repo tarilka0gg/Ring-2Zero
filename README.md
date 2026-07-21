@@ -207,7 +207,7 @@ For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.
 
 ## Changelog
 
-Latest (**v0.299.2**): the client page is now served directly by the binary (no separate static server, works over TLS/Tailscale automatically), `install.sh` handles dependencies/build/alias end-to-end, and a batch of ACK-loss/damage-tracking edge cases from v0.299.1 are fixed.
+Latest (**v0.300.0**): `install.sh` handles dependencies/compiler/build/alias/man-page end-to-end, `--help` and `man ring-2zero` both work properly now, and 70 unit tests now cover what used to be untested (`diff.rs`, `encoder.rs`, `stream.rs`, and the rest).
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 
