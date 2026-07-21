@@ -116,8 +116,9 @@ impl FrameProfiler {
                 // merged_tiles list picks an unrelated tile whenever merging
                 // actually reduced the count. Recompute the representative
                 // original-grid index from the merged tile's own geometry
-                // instead (same approach stream.rs uses for the real path).
-                let tile_idx = (tile.y / self.tile_height * self.config.tiles_x + tile.x / self.tile_width) as usize;
+                // instead (same shared Tile::representative_index stream.rs
+                // uses for the real path, instead of a hand-copied formula).
+                let tile_idx = tile.representative_index(self.tile_width, self.tile_height, self.config.tiles_x);
                 let metadata = self.diff_detector.get_metadata(tile_idx);
                 let priority = calculate_priority(
                     tile,
@@ -156,20 +157,29 @@ impl FrameProfiler {
             .collect();
         timing.hash_collection_us = t4.elapsed().as_secs_f64() * 1_000_000.0;
 
-        // 6. Cache Check - порівнюємо хеш merged tile з cached_hash
+        // 6. Cache Check - порівнюємо хеш конкретного тайлу з ЙОГО ВЛАСНИМ
+        // cached_hash (не скануємо всі тайли — hash_tile є некриптографічним
+        // XOR-акумулятором, тож збіг хешів двох різних тайлів можливий).
+        // Restricted to single-cell tiles, mirroring stream.rs's
+        // is_single_cell gate: a merged multi-cell tile's cache entry only
+        // covers its one representative cell's hash, so treating a match
+        // there as valid for the whole merged region would serve stale bytes
+        // for the other cells it covers.
         let t5 = Instant::now();
-        let cached_data: Vec<Option<Vec<u8>>> = tile_hashes.iter()
-            .enumerate()
-            .map(|(i, &merged_hash)| {
-                // Перевіряємо всі тайли у metadata чи є хтось з таким хешем
-                for metadata in self.diff_detector.get_all_metadata() {
-                    if metadata.cached_hash == merged_hash && metadata.cached_encoded.is_some() {
-                        timing.cache_hits += 1;
-                        // Cache hit - clone Vec
-                        return metadata.cached_encoded.clone();
-                    }
+        let cached_data: Vec<Option<Vec<u8>>> = sorted_tiles.iter()
+            .zip(sorted_tile_indices.iter())
+            .zip(tile_hashes.iter())
+            .map(|((tile, &tile_idx), &merged_hash)| {
+                if !tile.is_single_cell(self.tile_width, self.tile_height, self.config.tiles_x, self.tiles_y) {
+                    return None;
                 }
-                None
+                let metadata = self.diff_detector.get_metadata(tile_idx);
+                if metadata.cached_hash == merged_hash && metadata.cached_encoded.is_some() {
+                    timing.cache_hits += 1;
+                    metadata.cached_encoded.clone()
+                } else {
+                    None
+                }
             })
             .collect();
         timing.cache_check_us = t5.elapsed().as_secs_f64() * 1_000_000.0;
@@ -230,18 +240,23 @@ impl FrameProfiler {
         }
         timing.webp_encoding_us = t7.elapsed().as_secs_f64() * 1_000_000.0;
 
-        // 9. Cache Update - зберігаємо хеш та encoded data для merged tiles
+        // 9. Cache Update - зберігаємо хеш та encoded data лише для single-cell
+        // tiles (mirrors stream.rs's is_single_cell restriction — see the
+        // Cache Check comment above for why a merged multi-cell tile can't be
+        // safely cached under its one representative index).
         let t8 = Instant::now();
         for (i, &merged_hash) in tile_hashes.iter().enumerate() {
-            if !encoded[i].is_empty() {
-                // Знаходимо tile_idx для збереження (використовуємо перший tile з merged group)
-                if let Some(&tile_idx) = sorted_tile_indices.get(i) {
-                    let tile_metadata = self.diff_detector.get_all_metadata_mut();
-                    if tile_idx < tile_metadata.len() {
-                        // Store encoded tile in cache
-                        tile_metadata[tile_idx].cached_encoded = Some(encoded[i].clone());
-                        tile_metadata[tile_idx].cached_hash = merged_hash;
-                    }
+            if encoded[i].is_empty() {
+                continue;
+            }
+            if !sorted_tiles[i].is_single_cell(self.tile_width, self.tile_height, self.config.tiles_x, self.tiles_y) {
+                continue;
+            }
+            if let Some(&tile_idx) = sorted_tile_indices.get(i) {
+                let tile_metadata = self.diff_detector.get_all_metadata_mut();
+                if tile_idx < tile_metadata.len() {
+                    tile_metadata[tile_idx].cached_encoded = Some(encoded[i].clone());
+                    tile_metadata[tile_idx].cached_hash = merged_hash;
                 }
             }
         }
