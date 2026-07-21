@@ -116,6 +116,7 @@ Run `frame_profiler` and see which stage dominates:
 - If a non-localhost connection never completes on a version older than v0.291: that's a known, fixed bug (ICE candidates arriving before the SDP answer were dropped) — update.
 
 ### Build errors
+- Try `./install.sh --dry-run` first — it checks pkg-config modules, clang, and cargo the same way this list describes manually, and tells you exactly which is missing.
 - Missing Wayland headers: `libwayland-dev` (Debian/Ubuntu), `wayland` (Arch), `dev-libs/wayland` (Gentoo).
 - Linker: `.cargo/config.toml` pins `linker = "clang"` — make sure a `clang` binary is on `PATH` (Gentoo: `emerge sys-devel/clang`; set `CC`/`CXX` explicitly if you have multiple slotted versions).
 - `pipewire_capture` build fails: needs `libpipewire-0.3` and `libdbus-1` dev headers/pkg-config files.

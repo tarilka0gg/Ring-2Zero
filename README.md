@@ -22,19 +22,17 @@ High-performance Wayland screen streaming server with WebRTC support.
 
 The browser client is baked into the binary — there's no separate file to open or static server to run. Once the server is up, one URL is the whole client.
 
-1. **Install system dependencies** — see [Dependencies](#dependencies) below for the full list and per-distro package names.
-
-2. **Build**:
+1. **Clone and install**:
    ```bash
    git clone https://github.com/tarilka0gg/Ring-2Zero.git
    cd Ring-2Zero
-   cargo build --release
+   ./install.sh
    ```
-   Not on a wlroots compositor (niri, sway)? Add `--features pipewire_capture` — see [Building](#building). Want a plain `ring-2zero` command instead of typing the `target/release/` path every time? `cargo install --path .` puts it on `PATH` (usually `~/.cargo/bin`).
+   `install.sh` detects your distro's package manager and installs missing system libraries (asking for confirmation first), finds or installs a C compiler and Rust toolchain, builds a release binary, installs it as `ring-2zero` on `PATH` (`cargo install --path .` under the hood), and adds an `r2zr` alias to whichever shell actually launched it (bash/zsh/fish; anything else falls back to `~/.profile`). Every failure prints what went wrong and how to fix it. Options: `-y`/`--yes` (don't prompt before installing packages), `--pipewire` (build with PipeWire capture support too), `--dry-run` (show what it would do), `--no-alias`. See [Dependencies](#dependencies) below for what it's installing, or [Building](#building) to do it by hand instead.
 
-3. **Run the server**:
+2. **Run the server**:
    ```bash
-   ./target/release/ring-2zero      # or just `ring-2zero` after `cargo install`
+   ring-2zero            # or the r2zr alias install.sh just added, in a new shell
    ```
    The first run benchmarks your CPU's WebP encoding speed to pick a sensible tile-merging setting, and caches the result (`~/.cache/screen-streamer/cpu_bench.json`) so it only costs a couple seconds once. Skip it with `--no-adaptive`. `--help` prints the full flag/env var reference.
 
@@ -46,11 +44,13 @@ The browser client is baked into the binary — there's no separate file to open
    Open http://<this-host>:9001 in a browser (password prompt uses the token above) — no separate client file needed, this binary serves the page itself
    ```
 
-4. **Open that URL** in a browser — e.g. `http://localhost:9001`. On first load it prompts for the auth token printed above; paste it once, it's remembered in the browser's `localStorage` from then on. The page auto-detects the server address it was loaded from, so the same URL keeps working unchanged when you switch to [Remote access](#remote-access) (Tailscale, etc.) below — no `?server=` param needed unless you're hosting the page somewhere other than this binary.
+3. **Open that URL** in a browser — e.g. `http://localhost:9001`. On first load it prompts for the auth token printed above; paste it once, it's remembered in the browser's `localStorage` from then on. The page auto-detects the server address it was loaded from, so the same URL keeps working unchanged when you switch to [Remote access](#remote-access) (Tailscale, etc.) below — no `?server=` param needed unless you're hosting the page somewhere other than this binary.
 
-5. You should now see your screen streaming in the browser tab. To view it from *another* device (phone, laptop, over the internet), see [Remote access](#remote-access).
+4. You should now see your screen streaming in the browser tab. To view it from *another* device (phone, laptop, over the internet), see [Remote access](#remote-access).
 
 ## Building
+
+`./install.sh` (see [Quick start](#quick-start)) handles all of this automatically. To do it by hand instead:
 
 ```bash
 # Standard build (wlr-screencopy only)
@@ -171,6 +171,7 @@ Optional (for `--features pipewire_capture`):
 ## Project Structure
 
 ```
+install.sh                 — dependency detection/install, build, install, shell alias
 src/
 ├── main.rs               — entry point
 ├── server.rs             — WebSocket + WebRTC server, serves the client page over HTTP(S)
