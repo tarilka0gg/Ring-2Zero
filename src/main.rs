@@ -57,6 +57,7 @@ fn print_help() {
          \n\
          USAGE:\n\
          \x20   ring-2zero [OPTIONS]\n\
+         \x20   r2zr [OPTIONS]           (shorthand alias — set up by install.sh)\n\
          \n\
          OPTIONS:\n\
          \x20   -h, --help       Print this help and exit\n\
@@ -73,6 +74,10 @@ fn print_help() {
          \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
          \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
          \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
+         \n\
+         Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
+         everything else it does and just add the alias by hand — see its\n\
+         source for the per-shell alias/abbr syntax).\n\
          \n\
          See README.md / docs/DEVELOPMENT.md for the full reference."
     );
