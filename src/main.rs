@@ -51,6 +51,47 @@ fn load_tls_acceptor(
     Ok(Some(TlsAcceptor::from(Arc::new(tls_config))))
 }
 
+/// Block-letter startup banner (mono12 figlet-style), printed once before
+/// anything else — only on an actual terminal (never into a redirected
+/// log/systemd journal, where ANSI art is just noise) and without color
+/// escapes when NO_COLOR is set (https://no-color.org).
+fn print_banner() {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+
+    const LINES: [&str; 7] = [
+        " ▄▄▄▄▄▄     ▄▄▄▄▄▄   ▄▄▄   ▄▄     ▄▄▄▄              ▄▄▄▄▄    ▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄      ▄▄▄▄",
+        " ██▀▀▀▀██   ▀▀██▀▀   ███   ██   ██▀▀▀▀█            █▀▀▀▀██▄  ▀▀▀▀▀███  ██▀▀▀▀▀▀  ██▀▀▀▀██   ██▀▀██",
+        " ██    ██     ██     ██▀█  ██  ██                        ██      ██▀   ██        ██    ██  ██    ██",
+        " ███████      ██     ██ ██ ██  ██  ▄▄▄▄                ▄█▀     ▄██▀    ███████   ███████   ██    ██",
+        " ██  ▀██▄     ██     ██  █▄██  ██  ▀▀██   █████      ▄█▀      ▄██      ██        ██  ▀██▄  ██    ██",
+        " ██    ██   ▄▄██▄▄   ██   ███   ██▄▄▄██            ▄██▄▄▄▄▄  ███▄▄▄▄▄  ██▄▄▄▄▄▄  ██    ██   ██▄▄██",
+        " ▀▀    ▀▀▀  ▀▀▀▀▀▀   ▀▀   ▀▀▀     ▀▀▀▀             ▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀  ▀▀    ▀▀▀   ▀▀▀▀",
+    ];
+    // Cyan -> blue -> purple, top to bottom (256-color ANSI).
+    const COLORS: [u8; 7] = [51, 45, 39, 33, 69, 105, 141];
+
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+
+    println!();
+    for (line, color) in LINES.iter().zip(COLORS) {
+        if no_color {
+            println!("{line}");
+        } else {
+            println!("\x1b[38;5;{color}m{line}\x1b[0m");
+        }
+    }
+    let subtitle = format!("  Wayland screen streamer over WebRTC · v{}", env!("CARGO_PKG_VERSION"));
+    if no_color {
+        println!("{subtitle}");
+    } else {
+        println!("\x1b[38;5;141m{subtitle}\x1b[0m");
+    }
+    println!();
+}
+
 fn print_help() {
     println!(
         "ring-2zero — Wayland screen streaming server over WebRTC\n\
@@ -91,6 +132,8 @@ async fn main() -> Result<()> {
         print_help();
         return Ok(());
     }
+
+    print_banner();
 
     // Set RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug for
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
