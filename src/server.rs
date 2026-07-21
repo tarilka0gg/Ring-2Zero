@@ -255,3 +255,67 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_param_finds_the_requested_key() {
+        assert_eq!(query_param("token=abc&x=1", "token"), Some("abc"));
+        assert_eq!(query_param("x=1&token=abc", "token"), Some("abc"));
+    }
+
+    #[test]
+    fn query_param_returns_none_for_a_missing_key() {
+        assert_eq!(query_param("x=1&y=2", "token"), None);
+    }
+
+    #[test]
+    fn query_param_returns_none_for_a_valueless_key() {
+        // `token` with no `=value` at all shouldn't be confused with a
+        // present-but-empty value.
+        assert_eq!(query_param("token&x=1", "token"), None);
+    }
+
+    #[test]
+    fn query_param_handles_an_empty_value() {
+        assert_eq!(query_param("token=&x=1", "token"), Some(""));
+    }
+
+    #[tokio::test]
+    async fn prefixed_stream_replays_the_prefix_before_the_inner_stream() {
+        let (mut tx, rx) = tokio::io::duplex(64);
+        tx.write_all(b"world").await.unwrap();
+        drop(tx); // EOF after "world" so the final read terminates
+
+        let mut wrapped = PrefixedStream::new(b"hello ".to_vec(), rx);
+        let mut out = Vec::new();
+        wrapped.read_to_end(&mut out).await.unwrap();
+        assert_eq!(out, b"hello world");
+    }
+
+    #[tokio::test]
+    async fn prefixed_stream_writes_pass_through_to_the_inner_stream() {
+        let (tx, mut rx) = tokio::io::duplex(64);
+        let mut wrapped = PrefixedStream::new(Vec::new(), tx);
+        wrapped.write_all(b"ping").await.unwrap();
+
+        let mut buf = [0u8; 4];
+        rx.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+    }
+
+    #[tokio::test]
+    async fn serve_client_html_writes_a_200_response_with_the_full_page() {
+        let (tx, mut rx) = tokio::io::duplex(CLIENT_HTML.len() + 4096);
+        serve_client_html(tx).await.unwrap();
+
+        let mut out = Vec::new();
+        rx.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains(&format!("Content-Length: {}", CLIENT_HTML.as_bytes().len())));
+        assert!(text.ends_with(CLIENT_HTML));
+    }
+}

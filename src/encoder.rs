@@ -131,3 +131,115 @@ impl TileMerger {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TILE_W: u32 = 10;
+    const TILE_H: u32 = 10;
+
+    #[test]
+    fn single_tile_passes_through_unchanged() {
+        let merger = TileMerger::new(0);
+        let tiles = [Tile::new(10, 10, TILE_W, TILE_H, 5.0)]; // grid cell (1,1)
+        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        assert_eq!(merged.len(), 1);
+        assert_eq!((merged[0].x, merged[0].y, merged[0].width, merged[0].height), (10, 10, 10, 10));
+        assert_eq!(merged[0].quality, 5.0);
+    }
+
+    #[test]
+    fn horizontally_adjacent_tiles_merge_into_one() {
+        let merger = TileMerger::new(0);
+        let tiles = [
+            Tile::new(10, 10, TILE_W, TILE_H, 4.0), // cell (1,1)
+            Tile::new(20, 10, TILE_W, TILE_H, 8.0), // cell (2,1), adjacent
+        ];
+        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        assert_eq!(merged.len(), 1);
+        let t = &merged[0];
+        assert_eq!((t.x, t.y, t.width, t.height), (10, 10, 20, 10));
+        assert_eq!(t.quality, 6.0); // average of the two source tiles
+    }
+
+    #[test]
+    fn non_adjacent_tiles_stay_separate() {
+        let merger = TileMerger::new(0);
+        let tiles = [
+            Tile::new(0, 0, TILE_W, TILE_H, 5.0),   // cell (0,0)
+            Tile::new(30, 0, TILE_W, TILE_H, 5.0),  // cell (3,0) — two empty columns between
+        ];
+        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_gap_tolerates_one_missing_row_even_at_gap_zero() {
+        // merge_gap's tolerance check (`ty - last - 1 > merge_gap`) is 0 for
+        // exactly one missing row, so even merge_gap=0 bridges a single gap
+        // row — documenting actual behavior, not a requirement.
+        let merger = TileMerger::new(0);
+        let tiles = [
+            Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
+            Tile::new(0, 20, TILE_W, TILE_H, 5.0), // cell (0,2) — row 1 empty
+        ];
+        let merged = merger.merge(&tiles, 1, 3, TILE_W, TILE_H, 10, 30);
+        assert_eq!(merged.len(), 1);
+        assert_eq!((merged[0].y, merged[0].height), (0, 30));
+    }
+
+    #[test]
+    fn merge_gap_zero_does_not_bridge_a_two_row_gap() {
+        let merger = TileMerger::new(0);
+        let tiles = [
+            Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
+            Tile::new(0, 30, TILE_W, TILE_H, 5.0), // cell (0,3) — rows 1,2 empty
+        ];
+        let merged = merger.merge(&tiles, 1, 4, TILE_W, TILE_H, 10, 40);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_gap_one_bridges_a_two_row_gap() {
+        let merger = TileMerger::new(1);
+        let tiles = [
+            Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
+            Tile::new(0, 30, TILE_W, TILE_H, 5.0), // cell (0,3) — rows 1,2 empty
+        ];
+        let merged = merger.merge(&tiles, 1, 4, TILE_W, TILE_H, 10, 40);
+        assert_eq!(merged.len(), 1);
+        assert_eq!((merged[0].y, merged[0].height), (0, 40));
+    }
+
+    #[test]
+    fn a_full_screen_refresh_is_capped_to_4x4_cell_chunks() {
+        // Without the MAX_MERGE_TILES_X/Y cap, every tile dirty would merge
+        // into one giant rectangle that can exceed the DataChannel's
+        // message-size limit (see the cap's doc comment in TileMerger::merge).
+        let merger = TileMerger::new(0);
+        let tiles_x = 8;
+        let tiles_y = 8;
+        let mut tiles = Vec::new();
+        for ty in 0..tiles_y {
+            for tx in 0..tiles_x {
+                tiles.push(Tile::new(tx * TILE_W, ty * TILE_H, TILE_W, TILE_H, 5.0));
+            }
+        }
+        let merged = merger.merge(&tiles, tiles_x, tiles_y, TILE_W, TILE_H, tiles_x * TILE_W, tiles_y * TILE_H);
+        // An 8x8 grid entirely dirty must chunk into 2x2 = 4 pieces of at
+        // most 4x4 cells each, never one single 8x8 blob.
+        assert_eq!(merged.len(), 4);
+        for t in &merged {
+            assert!(t.width <= 4 * TILE_W, "chunk wider than the 4-cell cap: {}", t.width);
+            assert!(t.height <= 4 * TILE_H, "chunk taller than the 4-cell cap: {}", t.height);
+        }
+    }
+
+    #[test]
+    fn empty_input_produces_no_merged_tiles() {
+        let merger = TileMerger::new(0);
+        let merged = merger.merge(&[], 4, 4, TILE_W, TILE_H, 40, 40);
+        assert!(merged.is_empty());
+    }
+}
+

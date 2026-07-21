@@ -78,21 +78,29 @@ impl Config {
         }
     }
 
+    /// Parses and clamps a RING2ZERO_MAX_FPS value. Pure (no env access) so
+    /// the clamping logic is unit-testable without touching global process
+    /// state. Returns `None` for a value that doesn't parse as a `u64`.
+    fn parse_max_fps(input: &str) -> Option<std::num::NonZeroU64> {
+        let fps = input.parse::<u64>().ok()?;
+        // Clamped to 1000: frame_duration() is `1000 / fps` in whole
+        // milliseconds, so anything above 1000 would truncate to a 0ms
+        // duration, turning the cap into an uncapped busy-loop instead of
+        // throttling anything. Clamped to a minimum of 1 since 0 isn't a
+        // valid NonZeroU64.
+        std::num::NonZeroU64::new(fps.clamp(1, 1000))
+    }
+
     /// RING2ZERO_MAX_FPS=N caps target/static/dynamic tile FPS uniformly —
     /// a quick bandwidth-constrained testing knob, without touching the
-    /// adaptive-quality machinery. Clamped to 1000: frame_duration() is
-    /// `1000 / fps` in whole milliseconds, so anything above 1000 would
-    /// truncate to a 0ms duration, turning the cap into an uncapped
-    /// busy-loop instead of throttling anything.
+    /// adaptive-quality machinery.
     fn apply_max_fps_override(&mut self) {
         let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") else { return };
-        let Ok(fps) = fps_str.parse::<u64>() else { return };
-        let fps = fps.clamp(1, 1000);
-        let nz = std::num::NonZeroU64::new(fps).unwrap();
+        let Some(nz) = Self::parse_max_fps(&fps_str) else { return };
         self.target_fps = nz;
         self.static_tile_fps = nz;
         self.dynamic_tile_fps = nz;
-        println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {fps}");
+        println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {}", nz.get());
     }
 
     fn generate_random_token() -> String {
@@ -320,5 +328,61 @@ impl Config {
         println!("  Benchmark complete: {:.2}ms total", elapsed);
 
         elapsed / 10.0  // Average ms per tile
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_max_fps_clamps_to_1000() {
+        assert_eq!(Config::parse_max_fps("5000").unwrap().get(), 1000);
+    }
+
+    #[test]
+    fn parse_max_fps_clamps_to_1() {
+        assert_eq!(Config::parse_max_fps("0").unwrap().get(), 1);
+    }
+
+    #[test]
+    fn parse_max_fps_passes_through_a_valid_value() {
+        assert_eq!(Config::parse_max_fps("30").unwrap().get(), 30);
+    }
+
+    #[test]
+    fn parse_max_fps_rejects_garbage() {
+        assert!(Config::parse_max_fps("not-a-number").is_none());
+        assert!(Config::parse_max_fps("-5").is_none());
+        assert!(Config::parse_max_fps("").is_none());
+    }
+
+    #[test]
+    fn calculate_tile_dimensions_matches_expected_grid() {
+        let config = Config { tiles_x: 20, ..Config::default() };
+        let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(1920, 1080);
+        assert_eq!(tile_width, 96); // 1920 / 20
+        assert_eq!(tile_height, 54); // 96 * 1080 / 1920
+        assert_eq!(tiles_y, 20); // ceil(1080 / 54)
+    }
+
+    #[test]
+    fn frame_duration_matches_target_fps() {
+        let config = Config { target_fps: std::num::NonZeroU64::new(50).unwrap(), ..Config::default() };
+        assert_eq!(config.frame_duration(), std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn generate_random_token_has_the_expected_format() {
+        let token = Config::generate_random_token();
+        assert_eq!(token.len(), 32, "16 random bytes hex-encoded should be 32 chars");
+        assert!(token.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn generate_random_token_is_not_trivially_repeated() {
+        // Not a real randomness test, just a smoke check against an
+        // accidental constant/fallback path always returning the same value.
+        assert_ne!(Config::generate_random_token(), Config::generate_random_token());
     }
 }

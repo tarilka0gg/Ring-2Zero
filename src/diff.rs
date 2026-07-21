@@ -449,3 +449,179 @@ impl DiffDetector {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::DamageRegion;
+
+    const W: u32 = 20;
+    const H: u32 = 20;
+
+    /// tiles_x=2 over a 20x20 frame gives a clean 2x2 grid of 10x10 cells:
+    /// idx 0=(0,0) 1=(1,0) 2=(0,1) 3=(1,1).
+    fn test_config(tiles_x: u32, static_fps: u64, dynamic_fps: u64) -> Config {
+        Config {
+            tiles_x,
+            target_fps: std::num::NonZeroU64::new(60).unwrap(),
+            static_tile_fps: std::num::NonZeroU64::new(static_fps).unwrap(),
+            dynamic_tile_fps: std::num::NonZeroU64::new(dynamic_fps).unwrap(),
+            debug_mode: false,
+            ..Config::default()
+        }
+    }
+
+    fn solid_frame(width: u32, height: u32, value: u8) -> Frame {
+        Frame::new(vec![value; (width * height * 4) as usize], width, height, vec![])
+    }
+
+    // A varied (position-dependent) fill, not a flat color: hash_tile's
+    // XOR-accumulator is symmetric across the low/high 128-bit SIMD halves
+    // for any byte-uniform buffer, so two *different* solid colors of the
+    // same tile size can hash identically (see tile.rs's
+    // hash_tile_can_collide_between_different_uniform_colors test) — a flat
+    // `[value; 4]` fill here would make these tests pass or fail based on
+    // that hash artifact instead of the diff-detection logic they exist to
+    // check.
+    fn paint_region(frame: &mut Frame, x: u32, y: u32, w: u32, h: u32, seed: u8) {
+        for row in y..y + h {
+            for col in x..x + w {
+                let offset = ((row * frame.width + col) * 4) as usize;
+                let v = seed.wrapping_add(((row * 7 + col * 13) % 251) as u8);
+                frame.rgba[offset..offset + 4].copy_from_slice(&[v, v.wrapping_add(1), v.wrapping_add(2), 255]);
+            }
+        }
+    }
+
+    #[test]
+    fn first_frame_reports_every_tile_changed() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        let (changed, indices) = detector.detect_changes(&solid_frame(W, H, 0));
+        assert_eq!(changed.len(), 4);
+        assert_eq!(indices.len(), 4);
+    }
+
+    #[test]
+    fn identical_second_frame_reports_no_changes() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        let frame = solid_frame(W, H, 0);
+        detector.detect_changes(&frame);
+        let (changed, indices) = detector.detect_changes(&frame);
+        assert!(changed.is_empty());
+        assert!(indices.is_empty());
+    }
+
+    #[test]
+    fn only_the_changed_tile_is_reported() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.detect_changes(&solid_frame(W, H, 0));
+
+        let mut frame2 = solid_frame(W, H, 0);
+        paint_region(&mut frame2, 10, 10, 10, 10, 255); // cell (1,1) -> idx 3
+        let (_, indices) = detector.detect_changes(&frame2);
+        assert_eq!(indices, vec![3]);
+    }
+
+    #[test]
+    fn invalidate_tiles_forces_resend_even_under_active_damage_skip() {
+        // Regression test for the v0.299.2 fix: the damage-region skip used
+        // to bypass hash comparison entirely, silently swallowing a forced
+        // re-detection from invalidate_tiles whenever the invalidated tile
+        // fell outside the current frame's damage regions.
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        let frame = solid_frame(W, H, 0);
+        detector.detect_changes(&frame); // baseline
+
+        // Damage region covering only cell (0,0) -> idx 0, not idx 3.
+        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+
+        // Sanity check: without invalidation, tile 3 is skipped by damage tracking.
+        let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
+        let (_, indices) = detector.detect_changes(&f1);
+        assert!(!indices.contains(&3), "tile 3 shouldn't be touched without invalidation");
+
+        detector.invalidate_tiles(&[3]);
+
+        let f2 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere);
+        let (_, indices) = detector.detect_changes(&f2);
+        assert!(indices.contains(&3), "invalidated tile must be force-redetected even outside damage regions");
+    }
+
+    #[test]
+    fn force_redetect_only_applies_for_one_frame() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        let frame = solid_frame(W, H, 0);
+        detector.detect_changes(&frame);
+
+        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+        detector.invalidate_tiles(&[3]);
+
+        let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
+        let (_, indices1) = detector.detect_changes(&f1);
+        assert!(indices1.contains(&3));
+
+        // force_redetect was consumed by the frame above; damage-skip
+        // should apply normally again on this next frame.
+        let f2 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere);
+        let (_, indices2) = detector.detect_changes(&f2);
+        assert!(!indices2.contains(&3));
+    }
+
+    #[test]
+    fn throttled_tile_still_advances_its_hash_baseline() {
+        // Regression test for the v0.299.1 fix: a changed tile held back by
+        // FPS throttling used to be misclassified as "unchanged" and never
+        // advance prev_hashes, so a later revert to its original content
+        // would look unchanged instead of changed-again.
+        //
+        // A tile's *first* change after baseline always sends immediately
+        // (the is_dynamic state-transition fast path), so the interval only
+        // actually throttles a *second, continuing* change — hence 3 frames.
+        let mut detector = DiffDetector::new(test_config(2, 60, 1)); // dynamic interval = 60
+        detector.detect_changes(&solid_frame(W, H, 0)); // frame 1: baseline
+
+        let mut frame2 = solid_frame(W, H, 0);
+        paint_region(&mut frame2, 0, 0, 10, 10, 100);
+        detector.detect_changes(&frame2); // frame 2: first change, sent immediately
+        assert!(detector.get_metadata(0).last_sent_as_dynamic);
+
+        let mut frame3 = solid_frame(W, H, 0);
+        paint_region(&mut frame3, 0, 0, 10, 10, 200);
+        let (_, indices) = detector.detect_changes(&frame3); // frame 3: continuing change, now throttled
+        assert!(!indices.contains(&0), "a continuing dynamic-tile change should be throttled by a large dynamic_tile_fps interval");
+        assert_eq!(detector.get_metadata(0).unchanged_frames, 0, "throttled-but-changed tile must not be counted as unchanged");
+        assert_eq!(
+            detector.get_current_hashes()[0],
+            hash_tile(&frame3.rgba, 0, 0, 10, 10, W),
+            "hash baseline must advance to frame 3's content even though sending it was throttled"
+        );
+    }
+
+    #[test]
+    fn invalidate_cache_resets_only_dynamic_tiles_hash_state() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.detect_changes(&solid_frame(W, H, 0)); // frame 1: baseline
+
+        let mut frame2 = solid_frame(W, H, 0);
+        paint_region(&mut frame2, 0, 0, 10, 10, 100);
+        detector.detect_changes(&frame2); // first change -> classified dynamic, sent immediately
+        assert!(detector.get_metadata(0).last_sent_as_dynamic, "tile 0 should be classified dynamic after its first change");
+
+        let hash_before = detector.get_current_hashes()[0];
+        assert_ne!(hash_before, 0, "sanity: baseline actually moved off the initial zero");
+
+        detector.invalidate_cache();
+        assert_eq!(detector.get_metadata(0).cached_hash, 0);
+        assert_eq!(detector.get_current_hashes()[0], 0, "dynamic tile's hash baseline must be reset by invalidate_cache");
+    }
+
+    #[test]
+    fn reset_makes_the_next_frame_a_fresh_first_frame() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.detect_changes(&solid_frame(W, H, 0));
+        detector.reset();
+
+        let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
+        assert_eq!(changed.len(), 4, "after reset, the next frame should be treated as the first frame again");
+    }
+}
