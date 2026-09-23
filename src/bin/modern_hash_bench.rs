@@ -1,8 +1,7 @@
+use std::collections::HashMap;
 /// Modern Hash Functions Comparison
 /// Порівняння сучасних швидких хеш-функцій: xxHash3, HighwayHash, FNV-1a, CityHash
-
 use std::time::Instant;
-use std::collections::HashMap;
 
 // ============================================================================
 // СУЧАСНІ ХЕШ-ФУНКЦІЇ
@@ -150,10 +149,10 @@ fn generate_realistic_tile(w: u32, h: u32, seed: u32) -> Vec<u8> {
             let idx = ((y * w + x) * 4) as usize;
 
             // Gradient-like pattern
-            data[idx] = ((x + seed) % 256) as u8;     // R
+            data[idx] = ((x + seed) % 256) as u8; // R
             data[idx + 1] = ((y + seed) % 256) as u8; // G
             data[idx + 2] = ((x + y + seed) % 256) as u8; // B
-            data[idx + 3] = 255;                       // A
+            data[idx + 3] = 255; // A
         }
     }
 
@@ -269,9 +268,8 @@ fn main() {
     ];
 
     #[cfg(target_arch = "x86_64")]
-    let hash_functions_simd: Vec<(&str, HashFn)> = vec![
-        ("AVX2 Current", |d| unsafe { hash_avx2_current(d) }),
-    ];
+    let hash_functions_simd: Vec<(&str, HashFn)> =
+        vec![("AVX2 Current", |d| unsafe { hash_avx2_current(d) })];
 
     println!("╔════════════════════════════════════════════════════════════════════╗");
     println!("║                    BENCHMARK RESULTS                               ║");
@@ -302,9 +300,14 @@ fn main() {
 
     for result in &results {
         let speed_ns = result.speed_us * 1000.0;
-        let status = if result.false_negatives == 0 { "✅" } else { "❌" };
+        let status = if result.false_negatives == 0 {
+            "✅"
+        } else {
+            "❌"
+        };
 
-        println!("║ {:<19} │ {:>10.0} │ {:>6} │ {:>6} │ {:>10} ║ {}",
+        println!(
+            "║ {:<19} │ {:>10.0} │ {:>6} │ {:>6} │ {:>10} ║ {}",
             result.name,
             speed_ns,
             result.false_negatives,
@@ -321,8 +324,15 @@ fn main() {
     let best = &results[0];
     println!("🏆 Найкращий: {}", best.name);
     println!("   Швидкість: {:.0} ns/hash", best.speed_us * 1000.0);
-    println!("   False Negatives: {} {}", best.false_negatives,
-        if best.false_negatives == 0 { "✅" } else { "❌" });
+    println!(
+        "   False Negatives: {} {}",
+        best.false_negatives,
+        if best.false_negatives == 0 {
+            "✅"
+        } else {
+            "❌"
+        }
+    );
     println!("   False Positives: {}", best.false_positives);
     println!("   Collisions: {}\n", best.collisions);
 

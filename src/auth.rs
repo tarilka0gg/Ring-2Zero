@@ -83,12 +83,18 @@ mod tests {
 
     #[test]
     fn parse_auth_message_extracts_the_token() {
-        assert_eq!(parse_auth_message(r#"{"type":"auth","token":"t0k"}"#), Some("t0k".into()));
+        assert_eq!(
+            parse_auth_message(r#"{"type":"auth","token":"t0k"}"#),
+            Some("t0k".into())
+        );
     }
 
     #[test]
     fn parse_auth_message_rejects_other_shapes() {
-        assert_eq!(parse_auth_message(r#"{"type":"answer","token":"t0k"}"#), None);
+        assert_eq!(
+            parse_auth_message(r#"{"type":"answer","token":"t0k"}"#),
+            None
+        );
         assert_eq!(parse_auth_message(r#"{"type":"auth"}"#), None);
         assert_eq!(parse_auth_message(r#"{"type":"auth","token":42}"#), None);
         assert_eq!(parse_auth_message("not json"), None);
@@ -100,13 +106,17 @@ mod tests {
 
     #[tokio::test]
     async fn authenticate_accepts_the_right_token() {
-        let mut s = stream_of(vec![Message::Text(r#"{"type":"auth","token":"good"}"#.into())]);
+        let mut s = stream_of(vec![Message::Text(
+            r#"{"type":"auth","token":"good"}"#.into(),
+        )]);
         assert_eq!(authenticate(&mut s, "good").await, AuthOutcome::Accepted);
     }
 
     #[tokio::test]
     async fn authenticate_rejects_a_wrong_token_or_non_auth_first_message() {
-        let mut s = stream_of(vec![Message::Text(r#"{"type":"auth","token":"bad"}"#.into())]);
+        let mut s = stream_of(vec![Message::Text(
+            r#"{"type":"auth","token":"bad"}"#.into(),
+        )]);
         assert_eq!(authenticate(&mut s, "good").await, AuthOutcome::Rejected);
         let mut s = stream_of(vec![Message::Binary(vec![1, 2, 3])]);
         assert_eq!(authenticate(&mut s, "good").await, AuthOutcome::Rejected);

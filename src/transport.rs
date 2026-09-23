@@ -39,13 +39,24 @@ pub struct AckTracker {
 
 impl AckTracker {
     pub fn new(timeout: Duration) -> Self {
-        Self { timeout, next_seq: 0, in_flight: HashMap::new() }
+        Self {
+            timeout,
+            next_seq: 0,
+            in_flight: HashMap::new(),
+        }
     }
 
     /// Records a batch about to be sent and returns its sequence number.
     pub fn register(&mut self, epoch: u64, cells: Vec<usize>, now: Instant) -> u32 {
         self.next_seq = self.next_seq.wrapping_add(1);
-        self.in_flight.insert(self.next_seq, InFlight { sent_at: now, epoch, cells });
+        self.in_flight.insert(
+            self.next_seq,
+            InFlight {
+                sent_at: now,
+                epoch,
+                cells,
+            },
+        );
         self.next_seq
     }
 
@@ -77,7 +88,9 @@ impl AckTracker {
 
 pub async fn send_header(dc: &Arc<RTCDataChannel>, width: u32, height: u32) -> Result<()> {
     let header = protocol::encode_header(width, height).ok_or_else(|| {
-        Error::WebRTC(format!("Screen resolution {width}×{height} exceeds protocol limit"))
+        Error::WebRTC(format!(
+            "Screen resolution {width}×{height} exceeds protocol limit"
+        ))
     })?;
     dc.send(&Bytes::copy_from_slice(&header)).await?;
     Ok(())
@@ -85,9 +98,21 @@ pub async fn send_header(dc: &Arc<RTCDataChannel>, width: u32, height: u32) -> R
 
 /// Sends a frame's sequence packet and tile packets. Returns bytes of WebP sent.
 pub async fn send_tiles(dc: &Arc<RTCDataChannel>, seq: u32, frame: &EncodedFrame) -> Result<usize> {
-    dc.send(&Bytes::copy_from_slice(&protocol::encode_seq(seq, frame.tiles.len() as u32))).await?;
+    dc.send(&Bytes::copy_from_slice(&protocol::encode_seq(
+        seq,
+        frame.tiles.len() as u32,
+    )))
+    .await?;
     let tiles = frame.tiles.iter().zip(&frame.encoded).map(|(t, webp)| {
-        (TileRect { x: t.x, y: t.y, width: t.width, height: t.height }, webp.as_slice())
+        (
+            TileRect {
+                x: t.x,
+                y: t.y,
+                width: t.width,
+                height: t.height,
+            },
+            webp.as_slice(),
+        )
     });
     for packet in protocol::pack_tiles(tiles) {
         dc.send(&packet).await?;
@@ -125,8 +150,14 @@ mod tests {
         let now = Instant::now();
         t.register(3, vec![4, 5, 6], now);
         assert!(t.take_expired(now + ACK_TIMEOUT).is_empty());
-        assert_eq!(t.take_expired(now + ACK_TIMEOUT + MS), vec![(3, vec![4, 5, 6])]);
-        assert!(t.take_expired(now + ACK_TIMEOUT * 10).is_empty(), "reported once");
+        assert_eq!(
+            t.take_expired(now + ACK_TIMEOUT + MS),
+            vec![(3, vec![4, 5, 6])]
+        );
+        assert!(
+            t.take_expired(now + ACK_TIMEOUT * 10).is_empty(),
+            "reported once"
+        );
     }
 
     #[test]

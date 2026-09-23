@@ -10,7 +10,16 @@ impl TileMerger {
         Self { merge_gap }
     }
 
-    pub fn merge(&self, tiles: &[Tile], tiles_x: u32, tiles_y: u32, tile_width: u32, tile_height: u32, frame_width: u32, frame_height: u32) -> Vec<Tile> {
+    pub fn merge(
+        &self,
+        tiles: &[Tile],
+        tiles_x: u32,
+        tiles_y: u32,
+        tile_width: u32,
+        tile_height: u32,
+        frame_width: u32,
+        frame_height: u32,
+    ) -> Vec<Tile> {
         let tile_set: HashSet<(u32, u32)> = tiles
             .iter()
             .map(|t| (t.x / tile_width, t.y / tile_height))
@@ -65,7 +74,11 @@ impl TileMerger {
                             let height = ((chunk_ty_end + 1) * tile_height).min(frame_height) - y;
 
                             let quality = self.average_quality_fast(
-                                &tile_quality_map, chunk_tx_start, chunk_tx_end, chunk_ty_start, chunk_ty_end,
+                                &tile_quality_map,
+                                chunk_tx_start,
+                                chunk_tx_end,
+                                chunk_ty_start,
+                                chunk_ty_end,
                             );
 
                             merged.push(Tile::new(x, y, width, height, quality));
@@ -82,7 +95,12 @@ impl TileMerger {
         merged
     }
 
-    fn column_runs(&self, tile_set: &HashSet<(u32, u32)>, tx: u32, tiles_y: u32) -> Vec<(u32, u32)> {
+    fn column_runs(
+        &self,
+        tile_set: &HashSet<(u32, u32)>,
+        tx: u32,
+        tiles_y: u32,
+    ) -> Vec<(u32, u32)> {
         let mut runs = Vec::new();
         let mut start: Option<u32> = None;
         let mut last: Option<u32> = None;
@@ -110,7 +128,14 @@ impl TileMerger {
     }
 
     // Spatial HashMap optimization: O(k) instead of O(m) where k = region size
-    fn average_quality_fast(&self, tile_quality_map: &HashMap<(u32, u32), f32>, tx_start: u32, tx_end: u32, ty_start: u32, ty_end: u32) -> f32 {
+    fn average_quality_fast(
+        &self,
+        tile_quality_map: &HashMap<(u32, u32), f32>,
+        tx_start: u32,
+        tx_end: u32,
+        ty_start: u32,
+        ty_end: u32,
+    ) -> f32 {
         let mut sum = 0.0;
         let mut count = 0;
 
@@ -144,7 +169,10 @@ mod tests {
         let tiles = [Tile::new(10, 10, TILE_W, TILE_H, 5.0)]; // grid cell (1,1)
         let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
         assert_eq!(merged.len(), 1);
-        assert_eq!((merged[0].x, merged[0].y, merged[0].width, merged[0].height), (10, 10, 10, 10));
+        assert_eq!(
+            (merged[0].x, merged[0].y, merged[0].width, merged[0].height),
+            (10, 10, 10, 10)
+        );
         assert_eq!(merged[0].quality, 5.0);
     }
 
@@ -166,8 +194,8 @@ mod tests {
     fn non_adjacent_tiles_stay_separate() {
         let merger = TileMerger::new(0);
         let tiles = [
-            Tile::new(0, 0, TILE_W, TILE_H, 5.0),   // cell (0,0)
-            Tile::new(30, 0, TILE_W, TILE_H, 5.0),  // cell (3,0) — two empty columns between
+            Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
+            Tile::new(30, 0, TILE_W, TILE_H, 5.0), // cell (3,0) — two empty columns between
         ];
         let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
         assert_eq!(merged.len(), 2);
@@ -225,13 +253,29 @@ mod tests {
                 tiles.push(Tile::new(tx * TILE_W, ty * TILE_H, TILE_W, TILE_H, 5.0));
             }
         }
-        let merged = merger.merge(&tiles, tiles_x, tiles_y, TILE_W, TILE_H, tiles_x * TILE_W, tiles_y * TILE_H);
+        let merged = merger.merge(
+            &tiles,
+            tiles_x,
+            tiles_y,
+            TILE_W,
+            TILE_H,
+            tiles_x * TILE_W,
+            tiles_y * TILE_H,
+        );
         // An 8x8 grid entirely dirty must chunk into 2x2 = 4 pieces of at
         // most 4x4 cells each, never one single 8x8 blob.
         assert_eq!(merged.len(), 4);
         for t in &merged {
-            assert!(t.width <= 4 * TILE_W, "chunk wider than the 4-cell cap: {}", t.width);
-            assert!(t.height <= 4 * TILE_H, "chunk taller than the 4-cell cap: {}", t.height);
+            assert!(
+                t.width <= 4 * TILE_W,
+                "chunk wider than the 4-cell cap: {}",
+                t.width
+            );
+            assert!(
+                t.height <= 4 * TILE_H,
+                "chunk taller than the 4-cell cap: {}",
+                t.height
+            );
         }
     }
 
@@ -242,4 +286,3 @@ mod tests {
         assert!(merged.is_empty());
     }
 }
-

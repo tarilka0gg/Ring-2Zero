@@ -4,13 +4,13 @@
 use crate::config::Config;
 use crate::diff::DiffDetector;
 use crate::encoder::TileMerger;
+use crate::encoding_pool::{EncodingPool, EncodingTask};
 use crate::frame::Frame;
 use crate::tile::{Tile, TileMetadata};
 use crate::tile_buffer_pool::TileBufferPool;
-use crate::encoding_pool::{EncodingPool, EncodingTask};
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 thread_local! {
     static TILE_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -128,7 +128,8 @@ impl Pipeline {
             return None;
         }
 
-        let (tile_width, tile_height, tiles_y) = self.config.calculate_tile_dimensions(width, height);
+        let (tile_width, tile_height, tiles_y) =
+            self.config.calculate_tile_dimensions(width, height);
 
         let merged_tiles = self.tile_merger.merge(
             &changed_tiles,
@@ -143,7 +144,8 @@ impl Pipeline {
         let mut tiles_with_data: Vec<(Tile, usize, f32)> = merged_tiles
             .iter()
             .map(|tile| {
-                let tile_idx = tile.representative_index(tile_width, tile_height, self.config.tiles_x);
+                let tile_idx =
+                    tile.representative_index(tile_width, tile_height, self.config.tiles_x);
                 let metadata = self.diff_detector.get_metadata(tile_idx);
                 let priority = Self::priority(tile, metadata, width, height, &self.config);
                 (*tile, tile_idx, priority)
@@ -161,12 +163,15 @@ impl Pipeline {
         // covered cell has since changed. Restrict the cache
         // fast-path to genuinely single-cell tiles, where the
         // representative hash actually covers the whole tile.
-        let is_single_cell = |tile: &Tile| tile.is_single_cell(tile_width, tile_height, self.config.tiles_x, tiles_y);
+        let is_single_cell = |tile: &Tile| {
+            tile.is_single_cell(tile_width, tile_height, self.config.tiles_x, tiles_y)
+        };
 
         tiles_with_data.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
         let sorted_tiles: Vec<Tile> = tiles_with_data.iter().map(|(t, _, _)| *t).collect();
-        let sorted_tile_indices: Vec<usize> = tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
+        let sorted_tile_indices: Vec<usize> =
+            tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
 
         // Every original grid cell covered by this frame's tiles, for
         // ACK-loss recovery: unlike sorted_tile_indices (one
@@ -177,10 +182,13 @@ impl Pipeline {
         // only the one representative cell would ever get re-armed.
         let ack_indices: Vec<usize> = sorted_tiles
             .iter()
-            .flat_map(|tile| tile.covered_indices(tile_width, tile_height, self.config.tiles_x, tiles_y))
+            .flat_map(|tile| {
+                tile.covered_indices(tile_width, tile_height, self.config.tiles_x, tiles_y)
+            })
             .collect();
 
-        let tile_hashes: Vec<u64> = sorted_tile_indices.iter()
+        let tile_hashes: Vec<u64> = sorted_tile_indices
+            .iter()
             .map(|&idx| self.diff_detector.get_current_hashes()[idx])
             .collect();
 
@@ -251,7 +259,10 @@ impl Pipeline {
 
         for i in missing_tiles {
             let tile_idx = sorted_tile_indices[i];
-            log::error!("Tile {} was not encoded (worker panic or channel overflow)", tile_idx);
+            log::error!(
+                "Tile {} was not encoded (worker panic or channel overflow)",
+                tile_idx
+            );
 
             let tile = &sorted_tiles[i];
             let fallback_encoded = TILE_BUFFER.with(|buf| {
@@ -286,7 +297,8 @@ impl Pipeline {
                         quality: tile.quality,
                         ..Default::default()
                     },
-                ).unwrap_or_else(|_| Vec::new())
+                )
+                .unwrap_or_else(|_| Vec::new())
             });
 
             encoded[i] = fallback_encoded;
@@ -317,7 +329,13 @@ impl Pipeline {
         })
     }
 
-    fn priority(tile: &Tile, metadata: &TileMetadata, width: u32, height: u32, config: &Config) -> f32 {
+    fn priority(
+        tile: &Tile,
+        metadata: &TileMetadata,
+        width: u32,
+        height: u32,
+        config: &Config,
+    ) -> f32 {
         let frequency_score = metadata.update_frequency();
         let change_speed = (metadata.last_hash_diff.count_ones() as f32) / 64.0;
         let center_x = width / 2;
@@ -337,12 +355,16 @@ mod tests {
     use super::*;
 
     fn test_config() -> Config {
-        Config { tiles_x: 4, merge_gap: 0, ..Config::default() }
+        Config {
+            tiles_x: 4,
+            merge_gap: 0,
+            ..Config::default()
+        }
     }
 
     fn solid(w: u32, h: u32, v: u8) -> Frame {
         Frame {
-            rgba: vec![v; (w*h*4) as usize],
+            rgba: vec![v; (w * h * 4) as usize],
             width: w,
             height: h,
             damage_regions: vec![],
@@ -416,7 +438,10 @@ mod tests {
         let mut pipeline = Pipeline::new(test_config());
         let _ = pipeline.process(&solid(64, 36, 128));
         let _ = pipeline.process(&solid(128, 72, 128));
-        assert!(!pipeline.invalidate(0, &[0, 1]), "cells from the old 64x36 grid");
+        assert!(
+            !pipeline.invalidate(0, &[0, 1]),
+            "cells from the old 64x36 grid"
+        );
     }
 
     #[test]
@@ -440,7 +465,10 @@ mod tests {
 
         let center = Pipeline::priority(&center_tile, &metadata, 1920, 1080, &config);
         let corner = Pipeline::priority(&corner_tile, &metadata, 1920, 1080, &config);
-        assert!(center > corner, "a tile near the center should score higher than one at the corner");
+        assert!(
+            center > corner,
+            "a tile near the center should score higher than one at the corner"
+        );
     }
 
     #[test]
@@ -459,6 +487,9 @@ mod tests {
 
         let quiet_priority = Pipeline::priority(&tile, &quiet, 1920, 1080, &config);
         let busy_priority = Pipeline::priority(&tile, &busy, 1920, 1080, &config);
-        assert!(busy_priority > quiet_priority, "a tile that keeps changing should score higher than one that never does");
+        assert!(
+            busy_priority > quiet_priority,
+            "a tile that keeps changing should score higher than one that never does"
+        );
     }
 }

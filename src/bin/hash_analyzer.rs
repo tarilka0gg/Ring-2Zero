@@ -1,8 +1,7 @@
+use std::collections::HashMap;
 /// Hash Quality Analyzer - аналіз різних хеш-функцій для tile detection
 /// Порівнює: AVX2/SSE2 hash, XOR checksum, sampling, та інші варіанти
-
 use std::time::Instant;
-use std::collections::HashMap;
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -108,12 +107,7 @@ fn hash_sample_pixels(data: &[u8], stride: usize) -> u64 {
     for i in (0..data.len()).step_by(stride * 4) {
         if i + 3 < data.len() {
             // Sample один піксель (RGBA = 4 bytes)
-            let pixel = u32::from_le_bytes([
-                data[i],
-                data[i + 1],
-                data[i + 2],
-                data[i + 3],
-            ]);
+            let pixel = u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
             hash ^= pixel as u64;
             count += 1;
         }
@@ -128,11 +122,11 @@ fn hash_adaptive_sample(data: &[u8]) -> u64 {
 
     // Для маленьких тайлів - більше samples
     let stride = if pixels < 100 {
-        2  // Кожен 2-й піксель
+        2 // Кожен 2-й піксель
     } else if pixels < 1000 {
-        4  // Кожен 4-й
+        4 // Кожен 4-й
     } else {
-        8  // Кожен 8-й
+        8 // Кожен 8-й
     };
 
     hash_sample_pixels(data, stride)
@@ -370,14 +364,19 @@ fn main() {
 
     // Sort by quality score (lower is better)
     results.sort_by(|a, b| {
-        let score_a = a.false_negatives * 1000 + a.false_positives * 100 + (a.time_us * 10.0) as usize;
-        let score_b = b.false_negatives * 1000 + b.false_positives * 100 + (b.time_us * 10.0) as usize;
+        let score_a =
+            a.false_negatives * 1000 + a.false_positives * 100 + (a.time_us * 10.0) as usize;
+        let score_b =
+            b.false_negatives * 1000 + b.false_positives * 100 + (b.time_us * 10.0) as usize;
         score_a.cmp(&score_b)
     });
 
     for result in &results {
-        let score = result.false_negatives * 1000 + result.false_positives * 100 + (result.time_us * 10.0) as usize;
-        println!("║ {:<20} │ {:>9.3} │ {:>10} │ {:>6} │ {:>6} │ {:>5} ║",
+        let score = result.false_negatives * 1000
+            + result.false_positives * 100
+            + (result.time_us * 10.0) as usize;
+        println!(
+            "║ {:<20} │ {:>9.3} │ {:>10} │ {:>6} │ {:>6} │ {:>5} ║",
             result.name,
             result.time_us,
             result.collisions,

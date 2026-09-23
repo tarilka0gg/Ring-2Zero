@@ -2,18 +2,18 @@
 // Handles PeerConnection creation, configuration, and DataChannel setup
 
 use crate::config::Config;
-use crate::error::{Result, Error};
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::APIBuilder;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
-use webrtc::data_channel::RTCDataChannel;
-use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+use crate::error::{Error, Result};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use webrtc::api::media_engine::MediaEngine;
+use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use webrtc::peer_connection::RTCPeerConnection;
 
 pub struct WebRTCConnection {
     pub peer_connection: Arc<RTCPeerConnection>,
@@ -70,9 +70,9 @@ impl WebRTCConnection {
         // couple of messages went through. These values are closer to
         // typical browser defaults, tolerant of real-world latency/jitter.
         s.set_ice_timeouts(
-            Some(std::time::Duration::from_secs(15)),     // disconnected timeout
-            Some(std::time::Duration::from_secs(30)),     // failed timeout
-            Some(std::time::Duration::from_secs(2)),      // keepalive interval
+            Some(std::time::Duration::from_secs(15)), // disconnected timeout
+            Some(std::time::Duration::from_secs(30)), // failed timeout
+            Some(std::time::Duration::from_secs(2)),  // keepalive interval
         );
 
         let api = APIBuilder::new()
@@ -90,15 +90,19 @@ impl WebRTCConnection {
         let peer_connection = Arc::new(api.new_peer_connection(rtc_config).await?);
 
         // State change logging
-        peer_connection.on_ice_connection_state_change(Box::new(move |state: RTCIceConnectionState| {
-            println!("ICE state: {:?}", state);
-            Box::pin(async {})
-        }));
+        peer_connection.on_ice_connection_state_change(Box::new(
+            move |state: RTCIceConnectionState| {
+                println!("ICE state: {:?}", state);
+                Box::pin(async {})
+            },
+        ));
 
-        peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-            println!("Peer state: {:?}", state);
-            Box::pin(async {})
-        }));
+        peer_connection.on_peer_connection_state_change(Box::new(
+            move |state: RTCPeerConnectionState| {
+                println!("Peer state: {:?}", state);
+                Box::pin(async {})
+            },
+        ));
 
         // ICE candidate channel
         let (ice_tx, ice_rx) = mpsc::unbounded_channel::<RTCIceCandidate>();
@@ -107,8 +111,11 @@ impl WebRTCConnection {
             let ice_tx = ice_tx.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    println!("ICE candidate: {} {}:{} typ={:?}", candidate.protocol, candidate.address, candidate.port, candidate.typ);
-                    if let Err(_) = ice_tx.send(candidate) {
+                    println!(
+                        "ICE candidate: {} {}:{} typ={:?}",
+                        candidate.protocol, candidate.address, candidate.port, candidate.typ
+                    );
+                    if ice_tx.send(candidate).is_err() {
                         eprintln!("⚠️  WARNING: Failed to send ICE candidate (receiver dropped)");
                     }
                 }
@@ -151,8 +158,15 @@ impl WebRTCConnection {
         // overtaking its key-down would leave the key stuck), so unlike the
         // tile channel this one is ordered and reliable.
         let input_channel = if config.control {
-            let init = RTCDataChannelInit { ordered: Some(true), ..Default::default() };
-            Some(peer_connection.create_data_channel("input", Some(init)).await?)
+            let init = RTCDataChannelInit {
+                ordered: Some(true),
+                ..Default::default()
+            };
+            Some(
+                peer_connection
+                    .create_data_channel("input", Some(init))
+                    .await?,
+            )
         } else {
             None
         };
@@ -181,15 +195,19 @@ impl WebRTCConnection {
 
         // Register BEFORE set_local_description to avoid missing Complete on fast LAN
         let (ice_tx, mut ice_rx) = mpsc::channel::<()>(1);
-        self.peer_connection.on_ice_gathering_state_change(Box::new(move |state| {
-            if state == webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState::Complete {
-                let _ = ice_tx.try_send(());
-            }
-            Box::pin(async {})
-        }));
+        self.peer_connection
+            .on_ice_gathering_state_change(Box::new(move |state| {
+                if state == webrtc::ice_transport::ice_gatherer_state::RTCIceGathererState::Complete
+                {
+                    let _ = ice_tx.try_send(());
+                }
+                Box::pin(async {})
+            }));
 
         let offer = self.peer_connection.create_offer(None).await?;
-        self.peer_connection.set_local_description(offer.clone()).await?;
+        self.peer_connection
+            .set_local_description(offer.clone())
+            .await?;
 
         // Wait for ICE gathering
 
@@ -202,7 +220,10 @@ impl WebRTCConnection {
             }
         }
 
-        let final_offer = self.peer_connection.local_description().await
+        let final_offer = self
+            .peer_connection
+            .local_description()
+            .await
             .ok_or_else(|| Error::WebRTC("No local description available".into()))?;
 
         Ok(final_offer.sdp)

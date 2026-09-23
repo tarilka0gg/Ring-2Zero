@@ -1,6 +1,6 @@
-pub mod wlr;
 #[cfg(feature = "pipewire_capture")]
 pub mod pipewire;
+pub mod wlr;
 
 use crate::error::Result;
 use crate::frame::Frame;
@@ -30,7 +30,10 @@ impl ScreenCapture {
         Ok(Self { backend })
     }
 
-    fn detect(tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Result<Box<dyn CaptureBackend>> {
+    fn detect(
+        tx: mpsc::SyncSender<Frame>,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Box<dyn CaptureBackend>> {
         // 1. wlr-screencopy (niri, sway, wlroots DEs)
         if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("WAYLAND_SOCKET").is_ok() {
             match wlr::WlrCapture::probe() {
