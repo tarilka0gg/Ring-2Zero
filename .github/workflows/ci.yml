@@ -41,6 +41,7 @@ jobs:
         run: |
           sudo apt-get install -y libpipewire-0.3-dev libdbus-1-dev
           cargo build --release --features pipewire_capture
+          cargo clippy --features pipewire_capture --all-targets -- -D warnings
 
       - name: Run tests
         run: cargo test --release
