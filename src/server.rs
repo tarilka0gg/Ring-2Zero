@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::webrtc_connection::WebRTCConnection;
 use crate::signaling::{SignalingChannel, wait_for_answer};
 use crate::capture::ScreenCapture;
-use crate::stream::StreamServer;
+use crate::stream;
 
 use std::pin::Pin;
 use std::sync::{
@@ -232,8 +232,7 @@ where
             }
         });
 
-        let server = StreamServer::new(config.clone());
-        match server.handle_client_async(Arc::clone(&webrtc_conn.data_channel), frame_rx).await {
+        match stream::run_session(config.clone(), Arc::clone(&webrtc_conn.data_channel), frame_rx).await {
             Ok(_) => println!("Stream ended normally, attempting reconnect..."),
             Err(e) => eprintln!("Stream error: {e}, attempting reconnect..."),
         }
