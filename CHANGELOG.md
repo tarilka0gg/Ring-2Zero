@@ -17,6 +17,7 @@
 - **Fixed**: WebSocket upgrades were detected case-sensitively, so clients sending `upgrade: websocket` (Node, header-normalising proxies) got the HTML page instead.
 - **Fixed**: a frame narrower than the tile grid divided by zero. Grid sizes are now clamped.
 - **Fixed**: the processing thread now exits as soon as the session's send loop is gone, instead of spinning for up to 5 s on a static screen.
+- **Fixed**: the PipeWire portal capture backend (`--features pipewire_capture`) failed its D-Bus portal negotiation on every single attempt — a Response signal race, a session leak that broke the portal backend's own D-Bus registration after a couple of retries, and a variant-unwrap bug that discarded every successful CreateSession/Start response. Verified end-to-end against a real `xdg-desktop-portal-wlr`: negotiation and PipeWire format negotiation now complete reliably. **Known remaining issue**: the negotiated stream doesn't yet deliver frames to the capture callback — tracked in a comment at the fix site in `src_c/pw_capture.c`.
 - **Removed**: `tile.rs`'s `simd_batch`. `find_changed_tiles` was dead code, and the AVX2 counter increment cost two allocations plus a gather/scatter around a `+1`; it's now a plain in-place loop. Also removed: the unused `priority_history_window` config field.
 
 ## v0.300.1 (July 2026)
