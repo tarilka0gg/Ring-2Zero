@@ -8,7 +8,7 @@
 - **Added**: the page reconnects on its own after the connection drops.
 - **Changed**: the streaming core was split into small tested modules. `pipeline.rs` does diff → merge → prioritise → encode per frame, `transport.rs` handles ACK tracking and sending, `protocol.rs` the wire format, and `stream.rs` is thin glue. The pipeline owns the tile-grid epoch, so lost cells from an old grid are dropped without a shared atomic.
 - **Changed**: `TileMerger::merge` and the tile-grid helpers take a `Grid` struct instead of six loose numbers, which were passed around separately in 27 places.
-- **Changed**: logging goes through the `log` crate with levels instead of `println!`/`eprintln!`. The default is `warn,screen_streamer=info`; `--debug` switches the crate to `debug`. The remaining Ukrainian comments, log messages and `Error` texts are now English, without emoji prefixes.
+- **Changed**: logging goes through the `log` crate with levels instead of `println!`/`eprintln!`. The default is `warn,dtls=error,screen_streamer=info`; `--debug` switches the crate to `debug`. The remaining Ukrainian comments, log messages and `Error` texts are now English, without emoji prefixes.
 - **Changed**: CI now enforces `rustfmt` and `clippy -D warnings`, and runs a Node test of the page's input capture.
 - **Fixed**: on screens whose width isn't a multiple of 20 (e.g. 1366 px), the rightmost few pixel columns never updated. Tile merging trimmed the last column back to the base tile width.
 - **Fixed**: a tile batch lost right before the screen went static was never re-sent, because ACK timeouts were only checked when a new frame arrived. The send loop now also checks every 50 ms.
