@@ -38,25 +38,25 @@ impl ScreenCapture {
         if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("WAYLAND_SOCKET").is_ok() {
             match wlr::WlrCapture::probe() {
                 Ok(probe) => {
-                    eprintln!("Capture: wlr-screencopy (DMA-BUF preferred)");
+                    log::info!("Capture: wlr-screencopy (DMA-BUF preferred)");
                     return Ok(Box::new(wlr::WlrCapture::new(probe, tx, stop)));
                 }
-                Err(e) => eprintln!("wlr-screencopy: {e}"),
+                Err(e) => log::warn!("wlr-screencopy: {e}"),
             }
         }
 
         // 2. PipeWire via xdg-desktop-portal (GNOME, KDE, X11)
         #[cfg(feature = "pipewire_capture")]
         {
-            eprintln!("Capture: PipeWire (portal)");
+            log::info!("Capture: PipeWire (portal)");
             return Ok(Box::new(pipewire::PipeWireCapture::new(tx, stop)));
         }
 
         #[cfg(not(feature = "pipewire_capture"))]
         {
-            eprintln!(
-                "Немає доступного бекенду захоплення.\n\
-                 Wayland + wlr-screencopy потрібні, або скомпілюйте з --features pipewire_capture"
+            log::error!(
+                "No capture backend available.\n\
+                 Wayland + wlr-screencopy are required, or compile with --features pipewire_capture"
             );
             Err(crate::error::Error::NoBackend)
         }

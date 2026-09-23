@@ -9,7 +9,7 @@ pub struct ShmBuffer {
 impl ShmBuffer {
     pub fn new(size: usize) -> Result<Self, std::io::Error> {
         let fd =
-            unsafe { libc::syscall(libc::SYS_memfd_create, b"screencopy\0".as_ptr(), 0u32) as i32 };
+            unsafe { libc::syscall(libc::SYS_memfd_create, c"screencopy".as_ptr(), 0u32) as i32 };
 
         if fd < 0 {
             return Err(std::io::Error::last_os_error());

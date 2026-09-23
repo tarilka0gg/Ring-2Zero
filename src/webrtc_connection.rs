@@ -92,14 +92,14 @@ impl WebRTCConnection {
         // State change logging
         peer_connection.on_ice_connection_state_change(Box::new(
             move |state: RTCIceConnectionState| {
-                println!("ICE state: {:?}", state);
+                log::info!("ICE state: {:?}", state);
                 Box::pin(async {})
             },
         ));
 
         peer_connection.on_peer_connection_state_change(Box::new(
             move |state: RTCPeerConnectionState| {
-                println!("Peer state: {:?}", state);
+                log::info!("Peer state: {:?}", state);
                 Box::pin(async {})
             },
         ));
@@ -111,12 +111,15 @@ impl WebRTCConnection {
             let ice_tx = ice_tx.clone();
             Box::pin(async move {
                 if let Some(candidate) = candidate {
-                    println!(
+                    log::debug!(
                         "ICE candidate: {} {}:{} typ={:?}",
-                        candidate.protocol, candidate.address, candidate.port, candidate.typ
+                        candidate.protocol,
+                        candidate.address,
+                        candidate.port,
+                        candidate.typ
                     );
                     if ice_tx.send(candidate).is_err() {
-                        eprintln!("⚠️  WARNING: Failed to send ICE candidate (receiver dropped)");
+                        log::error!("Failed to send ICE candidate (receiver dropped)");
                     }
                 }
             })
@@ -131,7 +134,7 @@ impl WebRTCConnection {
             .transport()
             .ice_transport()
             .on_selected_candidate_pair_change(Box::new(|pair| {
-                println!("Selected candidate pair: {pair}");
+                log::info!("Selected candidate pair: {pair}");
                 Box::pin(async {})
             }));
 
@@ -191,7 +194,7 @@ impl WebRTCConnection {
 
     /// Create and send offer, wait for ICE gathering
     pub async fn create_offer(&self) -> Result<String> {
-        println!("Creating offer...");
+        log::debug!("Creating offer...");
 
         // Register BEFORE set_local_description to avoid missing Complete on fast LAN
         let (ice_tx, mut ice_rx) = mpsc::channel::<()>(1);
@@ -213,10 +216,10 @@ impl WebRTCConnection {
 
         tokio::select! {
             _ = ice_rx.recv() => {
-                println!("ICE gathering complete");
+                log::debug!("ICE gathering complete");
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {
-                println!("ICE gathering timeout");
+                log::warn!("ICE gathering timeout");
             }
         }
 
@@ -235,11 +238,11 @@ impl WebRTCConnection {
 
         tokio::select! {
             _ = rx.recv() => {
-                println!("DataChannel opened!");
+                log::info!("DataChannel opened");
                 Ok(true)
             }
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(timeout_secs)) => {
-                eprintln!("DataChannel open timeout");
+                log::warn!("DataChannel open timeout");
                 Ok(false)
             }
         }
@@ -259,7 +262,7 @@ impl Drop for WebRTCConnection {
         let pc = Arc::clone(&self.peer_connection);
         tokio::spawn(async move {
             if let Err(e) = pc.close().await {
-                eprintln!("Failed to close peer connection: {e}");
+                log::error!("Failed to close peer connection: {e}");
             }
         });
     }

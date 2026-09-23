@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "ring-2zero"
-version = "0.300.1"
+version = "0.400.0"
 dependencies = [
  "bytes",
  "cc",

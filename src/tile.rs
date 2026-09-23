@@ -26,22 +26,22 @@ impl SimdLevel {
     }
 }
 
-// Thread-local buffer для bulk hashing (уникає allocations)
+// Thread-local buffer for bulk hashing (avoids allocations)
 thread_local! {
     static HASH_BUFFER: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(256 * 256 * 4));
 }
 
-// Adaptive hash function з runtime SIMD detection
+// Adaptive hash function with runtime SIMD detection
 pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_width: u32) -> u64 {
-    // Optimization #4: Bulk hashing - один update замість багатьох
-    // Якщо tile повної ширини - можемо хешувати напряму
+    // Optimization #4: Bulk hashing - one update instead of many
+    // If tile is full width, we can hash directly
     if width == frame_width {
         let offset = (y * frame_width * 4) as usize;
         let len = (width * height * 4) as usize;
         return hash_contiguous(&rgba[offset..offset + len]);
     }
 
-    // Інакше копіюємо в contiguous buffer
+    // Otherwise copy into contiguous buffer
     HASH_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
         let tile_size = (width * height * 4) as usize;
@@ -50,7 +50,7 @@ pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_wid
             buf.resize(tile_size, 0);
         }
 
-        // Копіюємо tile рядок за рядком
+        // Copy tile row by row
         for row in 0..height {
             let src_offset = (((y + row) * frame_width + x) * 4) as usize;
             let dst_offset = (row * width * 4) as usize;
@@ -70,7 +70,7 @@ pub fn hash_tile_half(
     height: u32,
     frame_width: u32,
 ) -> u64 {
-    // Optimization #4: Bulk hashing для half hash
+    // Optimization #4: Bulk hashing for half hash
     HASH_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
         let rows = height.div_ceil(2);
@@ -80,7 +80,7 @@ pub fn hash_tile_half(
             buf.resize(tile_size, 0);
         }
 
-        // Копіюємо кожен 2-й рядок
+        // Copy every second row
         let mut dst_row = 0;
         let mut src_row = y;
         while src_row < y + height {
@@ -96,7 +96,7 @@ pub fn hash_tile_half(
     })
 }
 
-// Optimization #1: AVX2 хешування для contiguous data
+// Optimization #1: AVX2 hashing for contiguous data
 #[inline]
 fn hash_contiguous(data: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -154,7 +154,7 @@ fn fold_lanes(lanes: &[u64], len: u64) -> u64 {
     h
 }
 
-// AVX2 implementation (256-bit, процесує 32 байти за раз)
+// AVX2 implementation (256-bit, processes 32 bytes at a time)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hash_avx2(data: &[u8]) -> u64 {
@@ -213,7 +213,7 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
     fold_lanes(&lanes, data.len() as u64)
 }
 
-// SSE2 implementation (128-bit, процесує 16 байтів за раз)
+// SSE2 implementation (128-bit, processes 16 bytes at a time)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn hash_sse2(data: &[u8]) -> u64 {
@@ -252,7 +252,7 @@ unsafe fn hash_sse2(data: &[u8]) -> u64 {
     fold_lanes(&lanes, data.len() as u64)
 }
 
-// Scalar fallback (для систем без SIMD - non-x86_64 architectures)
+// Scalar fallback (for systems without SIMD - non-x86_64 architectures)
 #[cfg(not(target_arch = "x86_64"))]
 fn hash_scalar(data: &[u8]) -> u64 {
     let mut hasher = Xxh3::new();
@@ -260,7 +260,7 @@ fn hash_scalar(data: &[u8]) -> u64 {
     hasher.digest()
 }
 
-/// SIMD Batch Operations для diff detection
+/// SIMD Batch Operations for diff detection
 #[cfg(target_arch = "x86_64")]
 pub mod simd_batch {
     use core::arch::x86_64::*;
@@ -471,12 +471,12 @@ impl Tile {
     }
 }
 
-// Circular buffer для change history (замість VecDeque для кращої performance)
+// Circular buffer for change history (instead of VecDeque for better performance)
 #[derive(Clone, Debug)]
 pub struct CircularBuffer {
-    data: u64,    // Bitfield для 64 frames історії (true/false = 1/0 bit)
-    size: u8,     // Поточна кількість елементів
-    capacity: u8, // Максимальна місткість (обмежена 64)
+    data: u64,    // Bitfield for 64 frames history (true/false = 1/0 bit)
+    size: u8,     // Current number of elements
+    capacity: u8, // Maximum capacity (limited to 64)
 }
 
 impl CircularBuffer {
@@ -538,7 +538,7 @@ pub struct TileMetadata {
     pub last_sent_frame: u64,
     pub is_dynamic: bool,
     pub last_sent_as_dynamic: bool,
-    pub change_history: CircularBuffer, // Замінили VecDeque на CircularBuffer
+    pub change_history: CircularBuffer, // Replaced VecDeque with CircularBuffer
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 

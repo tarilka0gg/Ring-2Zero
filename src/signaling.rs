@@ -47,7 +47,7 @@ impl SignalingChannel {
                 let candidate_str = match candidate.to_json() {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Failed to serialize ICE candidate, skipping: {}", e);
+                        log::warn!("Failed to serialize ICE candidate, skipping: {}", e);
                         continue;
                     }
                 };
@@ -62,10 +62,10 @@ impl SignalingChannel {
                     .await
                     .is_err()
                 {
-                    eprintln!("Failed to send ICE candidate (channel full or closed)");
+                    log::error!("Failed to send ICE candidate (channel full or closed)");
                     break;
                 }
-                println!("Sent ICE candidate to client");
+                log::debug!("Sent ICE candidate to client");
             }
         });
 
@@ -111,20 +111,20 @@ where
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                             let msg_session = json.get("session").and_then(|v| v.as_u64());
                             if msg_session != Some(session) {
-                                println!("Ignoring stale signaling message from session {:?} (current: {session})", msg_session);
+                                log::debug!("Ignoring stale signaling message from session {:?} (current: {session})", msg_session);
                                 continue;
                             }
                             if json.get("type").and_then(|v| v.as_str()) == Some("answer") {
                                 if let Some(sdp) = json.get("sdp").and_then(|v| v.as_str()) {
-                                    println!("Got answer");
+                                    log::info!("Got answer");
                                     let answer = RTCSessionDescription::answer(sdp.to_owned())?;
                                     peer_connection.set_remote_description(answer).await?;
 
                                     for candidate_init in pending_candidates.drain(..) {
                                         if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
-                                            eprintln!("Failed to add buffered ICE candidate: {}", e);
+                                            log::warn!("Failed to add buffered ICE candidate: {}", e);
                                         } else {
-                                            println!("Added buffered ICE candidate from client");
+                                            log::debug!("Added buffered ICE candidate from client");
                                         }
                                     }
                                     return Ok(true);
@@ -132,14 +132,14 @@ where
                             } else if json.get("type").and_then(|v| v.as_str()) == Some("candidate") {
                                 // Handle ICE candidates from client
                                 if let Some(candidate_obj) = json.get("candidate") {
-                                    println!("Remote ICE candidate: {}", candidate_obj);
+                                    log::debug!("Remote ICE candidate: {}", candidate_obj);
                                     if let Ok(candidate_init) = serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(candidate_obj.clone()) {
                                         if peer_connection.remote_description().await.is_none() {
                                             pending_candidates.push(candidate_init);
                                         } else if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
-                                            eprintln!("Failed to add ICE candidate: {}", e);
+                                            log::warn!("Failed to add ICE candidate: {}", e);
                                         } else {
-                                            println!("Added ICE candidate from client");
+                                            log::debug!("Added ICE candidate from client");
                                         }
                                     }
                                 }
@@ -147,11 +147,11 @@ where
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        println!("WebSocket closed");
+                        log::info!("WebSocket closed");
                         return Ok(false);
                     }
                     Some(Err(e)) => {
-                        eprintln!("WebSocket error: {}", e);
+                        log::error!("WebSocket error: {}", e);
                         return Ok(false);
                     }
                     None => return Ok(false),
