@@ -39,7 +39,6 @@ The env vars and CLI flags in the [README](../README.md#configuration) cover eve
 | `webp_quality_low` / `webp_quality_high` | `1.0` / `10.0` | Used for dynamic vs. static tiles respectively. |
 | `merge_gap` | auto-tuned at startup | See [Tile merging](#tile-merging); `0` with `--no-adaptive`. |
 | `priority_frequency_weight` / `priority_speed_weight` / `priority_center_weight` | `0.5` / `0.3` / `0.2` | See [Priority scoring](#priority-scoring). |
-| `priority_history_window` | `30` | Currently unused — `TileMetadata`'s `CircularBuffer` change history is hardcoded to a 32-frame window (`tile.rs`'s `CircularBuffer::default()`), independent of this field. |
 | `static_tile_fps` / `dynamic_tile_fps` | `16` / `60` | Send-rate cap per tile mode — see [FPS throttling](#fps-throttling--adaptive-send-rate). |
 
 ## Wire protocol

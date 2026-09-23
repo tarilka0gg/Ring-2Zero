@@ -1,5 +1,6 @@
 // Library exports for screen-streamer
 
+pub mod auth;
 pub mod config;
 pub mod error;
 pub mod frame;
@@ -11,6 +12,7 @@ pub mod tile_extract;
 pub mod tile_buffer_pool;
 pub mod diff;
 pub mod encoder;
+pub mod protocol;
 pub mod encoding_pool;
 pub mod stream;
 pub mod webrtc_connection;
