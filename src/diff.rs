@@ -61,28 +61,28 @@ impl DiffDetector {
             self.changed_mask = vec![false; total_tiles];
         }
 
-        // Перевіряємо чи є damage regions від Wayland
+        // Check if damage regions are present from Wayland
         let has_damage = !frame.damage_regions.is_empty();
 
         if self.config.debug_mode && self.frame_count.is_multiple_of(100) {
             if has_damage {
-                println!(
+                log::debug!(
                     "[Damage tracking] Received {} damage regions",
                     frame.damage_regions.len()
                 );
             } else {
-                println!("[Damage tracking] No damage regions from Wayland compositor");
+                log::debug!("[Damage tracking] No damage regions from Wayland compositor");
             }
         }
 
-        // Створюємо набір тайлів що перетинаються з damage regions.
+        // Create a set of tiles intersecting with damage regions.
         // Only touched (and only needs touching) on frames that actually
         // carry damage info — damaged_tiles is never read when !has_damage,
         // so resetting it then would just be a wasted O(total_tiles) pass.
         if has_damage {
             self.damaged_tiles.iter_mut().for_each(|d| *d = false);
             for damage in &frame.damage_regions {
-                // Знаходимо всі тайли що перетинаються з цим damage region
+                // Find all tiles intersecting with this damage region
                 let tile_x_start = (damage.x / tile_width).min(self.config.tiles_x - 1);
                 let tile_y_start = (damage.y / tile_height).min(tiles_y - 1);
 
@@ -196,11 +196,11 @@ impl DiffDetector {
 
                     let full_hash =
                         if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
-                            // Half хеш не змінився → Zero-copy!
+                            // Half hash unchanged → Zero-copy!
                             stats.0 += 1; // skipped_hashes
                             prev_hashes_ref[i]
                         } else {
-                            // Half хеш змінився → повний хеш
+                            // Half hash changed → full hash
                             hash_tile(frame_data, x, y, tw, th, width)
                         };
 
@@ -222,14 +222,14 @@ impl DiffDetector {
                     let was_sent_as_dynamic = tile_metadata_ref[i].last_sent_as_dynamic;
                     let frames_since_last = frame_count - tile_metadata_ref[i].last_sent_frame;
 
-                    // Розраховуємо інтервал відправки
+                    // Compute send interval
                     let interval = if is_dynamic {
                         config.target_fps.get() / config.dynamic_tile_fps.get()
                     } else {
                         config.target_fps.get() / config.static_tile_fps.get()
                     };
 
-                    // Перевіряємо чи треба відправляти
+                    // Check if sending is required
                     let should_send = is_first_frame
                         || (!was_sent_as_dynamic && is_dynamic)
                         || frames_since_last >= interval;
@@ -315,16 +315,19 @@ impl DiffDetector {
         self.skipped_hashes += skipped;
         self.total_hashes += total_tiles as u64;
 
-        // Логуємо статистику кожні 100 кадрів (silent in benchmark mode)
+        // Log stats every 100 frames (silent in benchmark mode)
         if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
             let skip_percent = (self.skipped_hashes as f64 / self.total_hashes as f64) * 100.0;
             let cpu_savings = skip_percent * 0.5;
-            println!(
+            log::debug!(
                 "[Zero-copy stats] Skipped: {}/{} tiles ({:.1}%) | Est. CPU savings: {:.1}%",
-                self.skipped_hashes, self.total_hashes, skip_percent, cpu_savings
+                self.skipped_hashes,
+                self.total_hashes,
+                skip_percent,
+                cpu_savings
             );
             if has_damage {
-                println!(
+                log::debug!(
                     "[Damage tracking] Skipped {} tiles outside damage regions",
                     damage_skip
                 );
@@ -410,23 +413,24 @@ impl DiffDetector {
             }
         }
 
-        // Логуємо статистику адаптивного FPS (тільки в debug режимі)
+        // Log adaptive FPS stats (only in debug mode)
         if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
-            println!(
+            log::debug!(
                 "[Frame {}] Changed tiles: {}",
                 self.frame_count,
                 changed_tiles.len()
             );
             if skipped_by_fps > 0 {
-                println!(
+                log::debug!(
                     "[Adaptive FPS] Skipped {} tiles due to FPS throttling",
                     skipped_by_fps
                 );
             }
             if dynamic_sent > 0 || static_sent > 0 {
-                println!(
+                log::debug!(
                     "[Adaptive FPS] Sent: {} dynamic (32 FPS), {} static (8 FPS)",
-                    dynamic_sent, static_sent
+                    dynamic_sent,
+                    static_sent
                 );
             }
         }
@@ -438,7 +442,7 @@ impl DiffDetector {
         &self.tile_metadata[index]
     }
 
-    // Optimization #3: Mutable access для update кешу
+    // Optimization #3: Mutable access for cache update
     pub fn get_metadata_mut(&mut self, index: usize) -> &mut TileMetadata {
         &mut self.tile_metadata[index]
     }

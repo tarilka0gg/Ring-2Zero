@@ -48,11 +48,15 @@ impl EncodingPool {
                             },
                         )
                         .unwrap_or_else(|e| {
-                            eprintln!(
-                                "⚠️  WebP encoding error at tile ({}, {}), {}×{}: {:?}",
-                                task.tile.x, task.tile.y, task.tile.width, task.tile.height, e
+                            log::error!(
+                                "WebP encoding error at tile ({}, {}), {}×{}: {:?}",
+                                task.tile.x,
+                                task.tile.y,
+                                task.tile.width,
+                                task.tile.height,
+                                e
                             );
-                            eprintln!("    Attempting fallback encoding with quality 50...");
+                            log::warn!("Attempting fallback encoding with quality 50...");
 
                             // Fallback: try with lower quality
                             fast_webp::encode_rgba(
@@ -65,7 +69,7 @@ impl EncodingPool {
                                 },
                             )
                             .unwrap_or_else(|e2| {
-                                eprintln!("❌ CRITICAL: Worker fallback encoding failed: {:?}", e2);
+                                log::error!("Worker fallback encoding failed: {:?}", e2);
                                 Vec::new()
                             })
                         });
@@ -105,7 +109,11 @@ impl EncodingPool {
                 Ok(result) => results.push(result),
                 Err(_) => {
                     // Timeout or disconnect - worker likely panicked
-                    eprintln!("Warning: encoding_pool.collect_results() timeout after {} results (expected {})", results.len(), count);
+                    log::warn!(
+                        "encoding_pool.collect_results() timeout after {} results (expected {})",
+                        results.len(),
+                        count
+                    );
                     break;
                 }
             }

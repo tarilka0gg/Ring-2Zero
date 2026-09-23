@@ -43,7 +43,7 @@ pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<
     let request = String::from_utf8_lossy(&buffer[..n]);
 
     if is_websocket_upgrade(&request) {
-        println!("WebSocket connection");
+        log::info!("WebSocket connection");
         handle_websocket_connection(stream, config).await
     } else if request.starts_with("GET ") {
         serve_client_html(stream).await
@@ -89,7 +89,7 @@ where
     let request = String::from_utf8_lossy(&buffer[..n]).into_owned();
 
     if is_websocket_upgrade(&request) {
-        println!("WebSocket connection (TLS)");
+        log::info!("WebSocket connection (TLS)");
         let wrapped = PrefixedStream::new(buffer[..n].to_vec(), stream);
         handle_websocket_connection(wrapped, config).await
     } else if request.starts_with("GET ") {
@@ -217,7 +217,7 @@ where
     tokio::spawn(async move {
         while let Some(msg) = ws_rx.recv().await {
             if let Err(e) = ws_sender.send(msg).await {
-                eprintln!("WebSocket send error: {}", e);
+                log::error!("WebSocket send error: {}", e);
                 break;
             }
         }
@@ -228,7 +228,7 @@ where
     loop {
         // Check if the WebSocket sender task is still running before trying to reconnect
         if ws_tx.is_closed() {
-            println!("WebSocket closed, stopping");
+            log::info!("WebSocket closed, stopping");
             break;
         }
 
@@ -237,7 +237,7 @@ where
         let (webrtc_conn, ice_channel) = match WebRTCConnection::new(&config).await {
             Ok(x) => x,
             Err(e) => {
-                eprintln!("WebRTC init failed: {e}");
+                log::error!("WebRTC init failed: {e}");
                 break;
             }
         };
@@ -245,7 +245,7 @@ where
         let offer_sdp = match webrtc_conn.create_offer().await {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("create_offer failed: {e}");
+                log::error!("create_offer failed: {e}");
                 break;
             }
         };
@@ -256,11 +256,11 @@ where
             .await
             .is_err()
         {
-            eprintln!("Failed to send offer — WebSocket likely closed");
+            log::error!("Failed to send offer — WebSocket likely closed");
             break;
         }
 
-        println!("Offer sent, waiting for answer...");
+        log::info!("Offer sent, waiting for answer...");
 
         let answer_received = wait_for_answer(
             &mut ws_receiver,
@@ -272,7 +272,7 @@ where
         .unwrap_or(false);
 
         if !answer_received {
-            eprintln!("No answer received within timeout, closing");
+            log::warn!("No answer received within timeout, closing");
             break;
         }
 
@@ -281,7 +281,7 @@ where
             .await
             .unwrap_or(false)
         {
-            eprintln!("DataChannel failed to open, closing");
+            log::error!("DataChannel failed to open, closing");
             break;
         }
 
@@ -294,12 +294,12 @@ where
             let capture = match ScreenCapture::new(frame_tx, stop_capture) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Capture setup failed: {e}");
+                    log::error!("Capture setup failed: {e}");
                     return;
                 }
             };
             if let Err(e) = capture.run(frame_duration) {
-                eprintln!("Capture error: {e}");
+                log::error!("Capture error: {e}");
             }
         });
 
@@ -312,8 +312,8 @@ where
         )
         .await
         {
-            Ok(_) => println!("Stream ended normally, attempting reconnect..."),
-            Err(e) => eprintln!("Stream error: {e}, attempting reconnect..."),
+            Ok(_) => log::info!("Stream ended normally, attempting reconnect..."),
+            Err(e) => log::error!("Stream error: {e}, attempting reconnect..."),
         }
 
         if let Some(session) = input {
@@ -329,7 +329,7 @@ where
         )
         .await;
         if join_result.is_err() {
-            eprintln!("Capture thread did not stop within 5s, abandoning it");
+            log::warn!("Capture thread did not stop within 5s, abandoning it");
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;

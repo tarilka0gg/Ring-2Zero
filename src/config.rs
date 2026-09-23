@@ -109,7 +109,7 @@ impl Config {
         self.target_fps = nz;
         self.static_tile_fps = nz;
         self.dynamic_tile_fps = nz;
-        println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {}", nz.get());
+        log::info!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {}", nz.get());
     }
 
     fn generate_random_token() -> String {
@@ -150,35 +150,35 @@ impl Config {
 
         // Try to load from cache first
         if let Some(cached_gap) = Self::load_cached_merge_gap() {
-            println!(
-                "✅ [Adaptive] Using cached benchmark result: merge_gap={}",
+            log::info!(
+                "[Adaptive] Using cached benchmark result: merge_gap={}",
                 cached_gap
             );
             config.merge_gap = cached_gap;
             return config;
         }
 
-        println!("🔍 [Adaptive] Running CPU benchmark (first run or cache invalid)...");
+        log::info!("[Adaptive] Running CPU benchmark (first run or cache invalid)...");
 
         // Benchmark encoding speed
         let ms_per_tile = Self::benchmark_encoding_speed();
 
         // Determine merge_gap based on performance
         config.merge_gap = if ms_per_tile > 20.0 {
-            println!(
-                "🐌 [Adaptive] Slow CPU detected ({:.1}ms/tile) → merge_gap=3 (aggressive merging)",
+            log::info!(
+                "[Adaptive] Slow CPU detected ({:.1}ms/tile) → merge_gap=3 (aggressive merging)",
                 ms_per_tile
             );
             3 // Aggressive: reduces tiles by 60-80%
         } else if ms_per_tile > 10.0 {
-            println!(
-                "⚡ [Adaptive] Medium CPU detected ({:.1}ms/tile) → merge_gap=1 (moderate merging)",
+            log::info!(
+                "[Adaptive] Medium CPU detected ({:.1}ms/tile) → merge_gap=1 (moderate merging)",
                 ms_per_tile
             );
             1 // Moderate: reduces tiles by 30-50%
         } else {
-            println!(
-                "🚀 [Adaptive] Fast CPU detected ({:.1}ms/tile) → merge_gap=0 (no merging)",
+            log::info!(
+                "[Adaptive] Fast CPU detected ({:.1}ms/tile) → merge_gap=0 (no merging)",
                 ms_per_tile
             );
             0 // Minimal: keeps most tiles separate for quality
@@ -250,24 +250,26 @@ impl Config {
 
         // Check CPU model matches
         if cache.cpu_model != current_cpu {
-            println!(
-                "  Cache invalid: CPU changed ({} → {})",
-                cache.cpu_model, current_cpu
+            log::warn!(
+                "Cache invalid: CPU changed ({} → {})",
+                cache.cpu_model,
+                current_cpu
             );
             return None;
         }
 
         // Check binary not recompiled
         if cache.binary_mtime != current_mtime {
-            println!("  Cache invalid: Binary recompiled");
+            log::warn!("Cache invalid: Binary recompiled");
             return None;
         }
 
         // Check tiles_x hasn't changed
         if cache.tiles_x != current_tiles_x {
-            println!(
-                "  Cache invalid: tiles_x changed ({} → {})",
-                cache.tiles_x, current_tiles_x
+            log::warn!(
+                "Cache invalid: tiles_x changed ({} → {})",
+                cache.tiles_x,
+                current_tiles_x
             );
             return None;
         }
@@ -275,7 +277,7 @@ impl Config {
         // Check cache age < 7 days
         let age_days = (now - cache.timestamp) / 86400;
         if age_days > 7 {
-            println!("  Cache invalid: Too old ({} days)", age_days);
+            log::warn!("  Cache invalid: Too old ({} days)", age_days);
             return None;
         }
 
@@ -299,9 +301,9 @@ impl Config {
 
         if let Ok(json) = serde_json::to_string_pretty(&cache) {
             if let Err(e) = std::fs::write(&cache_path, json) {
-                eprintln!("⚠️  Failed to save benchmark cache: {}", e);
+                log::error!("Failed to save benchmark cache: {}", e);
             } else {
-                println!("✅ Benchmark cached to {}", cache_path.display());
+                log::info!("Benchmark cached to {}", cache_path.display());
             }
         }
     }
@@ -317,17 +319,19 @@ impl Config {
         let tile_width = width / config.tiles_x;
         let tile_height = tile_width * height / width;
 
-        println!("  Creating test data...");
-        println!(
-            "  Tile dimensions: {}×{}px (based on tiles_x={})",
-            tile_width, tile_height, config.tiles_x
+        log::debug!("Creating test data...");
+        log::debug!(
+            "Tile dimensions: {}×{}px (based on tiles_x={})",
+            tile_width,
+            tile_height,
+            config.tiles_x
         );
         let test_data = vec![128u8; (tile_width * tile_height * 4) as usize];
 
-        println!("  Warm-up (2 iterations)...");
+        log::debug!("Warm-up (2 iterations)...");
         // Warm-up (fill CPU cache)
         for i in 0..2 {
-            println!("    Warm-up iteration {}", i + 1);
+            log::debug!("Warm-up iteration {}", i + 1);
             let _result = fast_webp::encode_rgba(
                 &test_data,
                 tile_width,
@@ -337,14 +341,14 @@ impl Config {
                     ..Default::default()
                 },
             );
-            println!("    Done");
+            log::debug!("Done");
         }
 
-        println!("  Running benchmark (10 iterations)...");
+        log::debug!("Running benchmark (10 iterations)...");
         // Actual benchmark (10 iterations for stability)
         let start = Instant::now();
         for i in 0..10 {
-            println!("    Benchmark iteration {}", i + 1);
+            log::debug!("Benchmark iteration {}", i + 1);
             let _result = fast_webp::encode_rgba(
                 &test_data,
                 tile_width,
@@ -357,7 +361,7 @@ impl Config {
         }
         let elapsed = start.elapsed().as_secs_f32() * 1000.0; // Convert to ms
 
-        println!("  Benchmark complete: {:.2}ms total", elapsed);
+        log::debug!("Benchmark complete: {:.2}ms total", elapsed);
 
         elapsed / 10.0 // Average ms per tile
     }

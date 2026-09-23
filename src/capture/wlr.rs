@@ -514,7 +514,7 @@ fn open_gbm() -> Option<GbmDevice> {
     for n in 128u32..=135 {
         let path = format!("/dev/dri/renderD{n}");
         if let Some(dev) = GbmDevice::try_open(&path) {
-            eprintln!("DMA-BUF: render node {path}");
+            log::debug!("DMA-BUF: render node {path}");
             return Some(dev);
         }
     }
@@ -601,7 +601,7 @@ impl CaptureBackend for WlrCapture {
         let shm = state
             .shm
             .clone()
-            .ok_or_else(|| Error::Wayland("wl_shm не знайдено".into()))?;
+            .ok_or_else(|| Error::Wayland("wl_shm not found".into()))?;
         let output = state.output.take().ok_or(Error::NoOutput)?;
         let manager = state
             .screencopy_manager
@@ -614,7 +614,7 @@ impl CaptureBackend for WlrCapture {
             None
         };
         if gbm.is_none() && state.linux_dmabuf.is_some() {
-            eprintln!("DMA-BUF: GBM недоступний → SHM");
+            log::warn!("DMA-BUF: GBM unavailable → SHM");
         }
 
         let mut shm_buf: Option<ShmCapBuf> = None;
@@ -656,7 +656,7 @@ impl CaptureBackend for WlrCapture {
                 {
                     dma_buf = DmaBuf::try_new(gd, ld, dw, dh, dfmt, &qh);
                     if dma_buf.is_none() {
-                        eprintln!("DMA-BUF: не вдалось створити буфер → SHM");
+                        log::warn!("DMA-BUF: failed to create buffer → SHM");
                     }
                 }
 
@@ -688,7 +688,7 @@ impl CaptureBackend for WlrCapture {
                     // should destroy the object") — it cannot be reused for
                     // a second copy() call, so a genuine SHM fallback needs
                     // a fresh capture_output() rather than reusing `frame`.
-                    eprintln!("DMA-BUF: compositor відхилив → SHM fallback (перезахоплення)");
+                    log::warn!("DMA-BUF: rejected by compositor → SHM fallback (re-capturing)");
                     frame.destroy();
                     dma_buf = None;
 
