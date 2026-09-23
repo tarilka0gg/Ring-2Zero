@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.400.0 (September 2026) — remaster
+- **Changed**: the client/server protocol changed, so use the page served by the same binary. Older cached or separately hosted `client.html` copies won't connect: the token moved out of the URL into the first WebSocket message, and the server now sends a `hello` with the ICE servers after authentication.
+- **Added**: remote control (`--control` / `RING2ZERO_CONTROL`). A **КЕРУВАННЯ** toggle appears in the page, and mouse, wheel and keyboard input is injected through `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` over an ordered `input` DataChannel. The pointer is bound to the streamed output, the keyboard reuses the compositor's keymap, and every held key/button is released when the tab loses focus or the session ends.
+- **Added**: `RING2ZERO_ICE_SERVERS` for STUN/TURN across NAT. It's validated at startup, and the same list is handed to the browser, so nothing needs configuring on the client side.
+- **Changed**: authentication is now the first WebSocket message (`{"type":"auth","token":…}`) instead of a `?token=` query parameter, which ended up in browser history and proxy logs. The comparison is constant-time, there's a 5 s deadline, and wrong tokens get a 1 s delay and close code `4001`. That lets the page tell a wrong password (asks again) from an unreachable server (keeps the saved one and retries) instead of guessing with a retry counter.
+- **Added**: the page reconnects on its own after the connection drops.
+- **Changed**: the streaming core was split into small tested modules. `pipeline.rs` does diff → merge → prioritise → encode per frame, `transport.rs` handles ACK tracking and sending, `protocol.rs` the wire format, and `stream.rs` is thin glue. The pipeline owns the tile-grid epoch, so lost cells from an old grid are dropped without a shared atomic.
+- **Changed**: `TileMerger::merge` and the tile-grid helpers take a `Grid` struct instead of six loose numbers, which were passed around separately in 27 places.
+- **Changed**: logging goes through the `log` crate with levels instead of `println!`/`eprintln!`. The default is `warn,screen_streamer=info`; `--debug` switches the crate to `debug`. The remaining Ukrainian comments, log messages and `Error` texts are now English, without emoji prefixes.
+- **Changed**: CI now enforces `rustfmt` and `clippy -D warnings`, and runs a Node test of the page's input capture.
+- **Fixed**: on screens whose width isn't a multiple of 20 (e.g. 1366 px), the rightmost few pixel columns never updated. Tile merging trimmed the last column back to the base tile width.
+- **Fixed**: a tile batch lost right before the screen went static was never re-sent, because ACK timeouts were only checked when a new frame arrived. The send loop now also checks every 50 ms.
+- **Fixed**: frame pacing drift. `frame_duration()` rounded to whole milliseconds, so 60 FPS was really 62.5.
+- **Fixed**: WebSocket upgrades were detected case-sensitively, so clients sending `upgrade: websocket` (Node, header-normalising proxies) got the HTML page instead.
+- **Fixed**: a frame narrower than the tile grid divided by zero. Grid sizes are now clamped.
+- **Fixed**: the processing thread now exits as soon as the session's send loop is gone, instead of spinning for up to 5 s on a static screen.
+- **Removed**: `tile.rs`'s `simd_batch`. `find_changed_tiles` was dead code, and the AVX2 counter increment cost two allocations plus a gather/scatter around a `+1`; it's now a plain in-place loop. Also removed: the unused `priority_history_window` config field.
+
 ## v0.300.1 (July 2026)
 - **Fixed**: `hash_tile`'s AVX2/SSE2 XOR-accumulator could hash two *different* solid-color tiles of the same size identically — every SIMD lane loaded the exact same value on every iteration for a byte-uniform buffer, and XORing a constant into the accumulator an even number of times cancels to a value that no longer depends on the data at all. Root-caused (not just papered over with a different final mix — that alone didn't fix it, see the regression tests' comments) by tying each iteration's data to the changing seed via addition, not two independently-cancelable XOR terms.
 - **Fixed**: the non-x86_64 scalar hashing fallback (`hash_scalar`) was missing its `use xxhash_rust::xxh3::Xxh3;` import and would never have compiled on a non-x86_64 target.
