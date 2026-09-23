@@ -138,7 +138,10 @@ impl MouseButton {
 /// A remote-control event from the client's `input` channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputEvent {
-    /// Absolute position in screen pixels. `0x01 | x u16 | y u16`
+    /// Absolute position, normalised: 0 is the left/top edge of the streamed
+    /// output and 65535 the right/bottom one — independent of resolution, so
+    /// a resize racing an in-flight event can't misplace it.
+    /// `0x01 | x u16 | y u16`
     PointerMotion { x: u16, y: u16 },
     /// `0x02 | button u8 | pressed u8`
     PointerButton { button: MouseButton, pressed: bool },

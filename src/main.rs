@@ -136,6 +136,7 @@ fn help_text() -> String {
      \x20   -h, --help       Print this help and exit\n\
      \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
      \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
+     \x20   --control        Let clients control this machine's mouse and keyboard\n\
      \n\
      Once running, open http://<this-machine>:9001 in a browser — the auth\n\
      token printed on startup is the connection password. No separate client\n\
@@ -147,6 +148,9 @@ fn help_text() -> String {
      \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
      \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
      \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
+     \x20   RING2ZERO_ICE_SERVERS     STUN/TURN for use across NAT, comma-separated:\n\
+     \x20                             stun:host:port,turn:user:pass@host:port\n\
+     \x20   RING2ZERO_CONTROL         Same as --control\n\
      \n\
      Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
      everything else it does and just add the alias by hand — see its\n\
@@ -220,19 +224,33 @@ async fn main() -> Result<()> {
     // Set RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug for
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
     // checks, mDNS query results) when troubleshooting a connection.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let debug = args.iter().any(|a| a == "--debug");
+    let default_filter = if debug { "warn,screen_streamer=debug" } else { "warn,screen_streamer=info" };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
 
     // Auto-detect optimal config based on CPU performance
-    let mut config = if args.contains(&"--no-adaptive".to_string()) {
+    let mut config = if args.iter().any(|a| a == "--no-adaptive") {
         println!("⚠️  Adaptive mode disabled, using defaults");
         Config::default()
     } else {
         Config::with_auto_merge_gap()
     };
 
-    if args.contains(&"--debug".to_string()) {
+    if debug {
         config.debug_mode = true;
         println!("[DEBUG MODE ENABLED]");
+    }
+    if args.iter().any(|a| a == "--control") {
+        config.control = true;
+    }
+    if let Ok(spec) = std::env::var("RING2ZERO_ICE_SERVERS") {
+        match screen_streamer::ice::parse_ice_servers(&spec) {
+            Ok(servers) => config.ice_servers = servers,
+            Err(e) => {
+                eprintln!("Invalid RING2ZERO_ICE_SERVERS: {e}");
+                std::process::exit(2);
+            }
+        }
     }
 
     let addr = format!("0.0.0.0:{}", config.ws_port);
@@ -261,6 +279,13 @@ async fn main() -> Result<()> {
     println!("Target FPS: {}", config.target_fps.get());
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());
+    if !config.ice_servers.is_empty() {
+        let urls: Vec<&str> = config.ice_servers.iter().flat_map(|s| s.urls.iter().map(String::as_str)).collect();
+        println!("ICE servers: {}", urls.join(", "));
+    }
+    if config.control {
+        println!("⚠️  Remote control ENABLED — anyone with the token can use this machine's mouse and keyboard");
+    }
 
     loop {
         let (tcp_stream, _) = listener.accept().await?;

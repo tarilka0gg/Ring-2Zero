@@ -18,6 +18,8 @@ use tokio::sync::{mpsc, Mutex};
 pub struct WebRTCConnection {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub data_channel: Arc<RTCDataChannel>,
+    /// Remote-control channel, present only with `Config::control`.
+    pub input_channel: Option<Arc<RTCDataChannel>>,
     data_channel_open_rx: Mutex<mpsc::Receiver<()>>,
 }
 
@@ -78,9 +80,10 @@ impl WebRTCConnection {
             .with_setting_engine(s)
             .build();
 
-        // No STUN for local connection (minimal latency)
+        // Host candidates only unless RING2ZERO_ICE_SERVERS adds STUN/TURN
+        // (needed across NAT; a LAN or Tailscale path works without).
         let rtc_config = RTCConfiguration {
-            ice_servers: vec![],
+            ice_servers: config.ice_servers.iter().map(Into::into).collect(),
             ..Default::default()
         };
 
@@ -144,6 +147,16 @@ impl WebRTCConnection {
             .create_data_channel("screen", Some(dc_init))
             .await?;
 
+        // Input events must arrive complete and in order (a key-up
+        // overtaking its key-down would leave the key stuck), so unlike the
+        // tile channel this one is ordered and reliable.
+        let input_channel = if config.control {
+            let init = RTCDataChannelInit { ordered: Some(true), ..Default::default() };
+            Some(peer_connection.create_data_channel("input", Some(init)).await?)
+        } else {
+            None
+        };
+
         // Register on_open callback immediately to avoid race condition
         let (open_tx, open_rx) = mpsc::channel::<()>(1);
         data_channel.on_open(Box::new(move || {
@@ -155,6 +168,7 @@ impl WebRTCConnection {
             Self {
                 peer_connection,
                 data_channel,
+                input_channel,
                 data_channel_open_rx: Mutex::new(open_rx),
             },
             IceChannel { ice_rx },
