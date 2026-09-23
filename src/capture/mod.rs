@@ -49,7 +49,7 @@ impl ScreenCapture {
         #[cfg(feature = "pipewire_capture")]
         {
             log::info!("Capture: PipeWire (portal)");
-            return Ok(Box::new(pipewire::PipeWireCapture::new(tx, stop)));
+            Ok(Box::new(pipewire::PipeWireCapture::new(tx, stop)))
         }
 
         #[cfg(not(feature = "pipewire_capture"))]
