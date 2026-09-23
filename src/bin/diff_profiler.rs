@@ -159,7 +159,8 @@ fn main() {
     let width = 1920u32;
     let height = 1080u32;
 
-    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
+    let grid = config.grid(width, height);
+    let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
     let total_tiles = (tiles_y * config.tiles_x) as usize;
 
     println!("Configuration:");

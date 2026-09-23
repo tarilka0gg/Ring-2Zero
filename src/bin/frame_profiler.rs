@@ -36,6 +36,7 @@ struct FrameProfiler {
     tile_width: u32,
     tile_height: u32,
     tiles_y: u32,
+    grid: screen_streamer::tile::Grid,
 }
 
 #[derive(Default)]
@@ -59,7 +60,8 @@ struct TimingBreakdown {
 
 impl FrameProfiler {
     fn new(config: Config, width: u32, height: u32) -> Self {
-        let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
+        let grid = config.grid(width, height);
+        let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
         Self {
             diff_detector: DiffDetector::new(config.clone()),
@@ -70,6 +72,7 @@ impl FrameProfiler {
             tile_width,
             tile_height,
             tiles_y,
+            grid,
         }
     }
 
@@ -92,15 +95,7 @@ impl FrameProfiler {
 
         // 2. Tile Merging
         let t1 = Instant::now();
-        let merged_tiles = self.tile_merger.merge(
-            &changed_tiles,
-            self.config.tiles_x,
-            self.tiles_y,
-            self.tile_width,
-            self.tile_height,
-            self.width,
-            self.height,
-        );
+        let merged_tiles = self.tile_merger.merge(&changed_tiles, &self.grid);
         timing.tile_merging_us = t1.elapsed().as_secs_f64() * 1_000_000.0;
         timing.tiles_merged = merged_tiles.len();
 
@@ -117,11 +112,7 @@ impl FrameProfiler {
                 // original-grid index from the merged tile's own geometry
                 // instead (same shared Tile::representative_index stream.rs
                 // uses for the real path, instead of a hand-copied formula).
-                let tile_idx = tile.representative_index(
-                    self.tile_width,
-                    self.tile_height,
-                    self.config.tiles_x,
-                );
+                let tile_idx = tile.representative_index(&self.grid);
                 let metadata = self.diff_detector.get_metadata(tile_idx);
                 let priority =
                     calculate_priority(tile, metadata, self.width, self.height, &self.config);
@@ -171,12 +162,7 @@ impl FrameProfiler {
             .zip(sorted_tile_indices.iter())
             .zip(tile_hashes.iter())
             .map(|((tile, &tile_idx), &merged_hash)| {
-                if !tile.is_single_cell(
-                    self.tile_width,
-                    self.tile_height,
-                    self.config.tiles_x,
-                    self.tiles_y,
-                ) {
+                if !tile.is_single_cell(&self.grid) {
                     return None;
                 }
                 let metadata = self.diff_detector.get_metadata(tile_idx);
@@ -256,12 +242,7 @@ impl FrameProfiler {
             if encoded[i].is_empty() {
                 continue;
             }
-            if !sorted_tiles[i].is_single_cell(
-                self.tile_width,
-                self.tile_height,
-                self.config.tiles_x,
-                self.tiles_y,
-            ) {
+            if !sorted_tiles[i].is_single_cell(&self.grid) {
                 continue;
             }
             if let Some(&tile_idx) = sorted_tile_indices.get(i) {

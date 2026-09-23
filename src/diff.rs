@@ -45,9 +45,9 @@ impl DiffDetector {
         let width = frame.width;
         let height = frame.height;
 
-        let (tile_width, tile_height, tiles_y) =
-            self.config.calculate_tile_dimensions(width, height);
-        let total_tiles = (tiles_y * self.config.tiles_x) as usize;
+        let grid = self.config.grid(width, height);
+        let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
+        let total_tiles = grid.cell_count();
 
         let is_first_frame = self.prev_hashes.is_empty();
 
@@ -176,20 +176,7 @@ impl DiffDetector {
                         return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
                     }
 
-                    let ty = i as u32 / config.tiles_x;
-                    let tx = i as u32 % config.tiles_x;
-                    let x = tx * tile_width;
-                    let y = ty * tile_height;
-                    let tw = if tx == config.tiles_x - 1 {
-                        width - x
-                    } else {
-                        tile_width
-                    };
-                    let th = if ty == tiles_y - 1 {
-                        height - y
-                    } else {
-                        tile_height
-                    };
+                    let (x, y, tw, th) = grid.cell_rect(i);
 
                     // Compute half_hash ONCE
                     let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
@@ -390,25 +377,11 @@ impl DiffDetector {
             self.changed_mask[i] = true;
         }
 
-        let changed_mask_ref = &self.changed_mask;
-        let unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
-            .filter(|&i| !changed_mask_ref[i])
-            .map(|i| (i, self.tile_metadata[i].unchanged_frames))
-            .collect();
-
-        if !unchanged_data.is_empty() {
-            // Extract counters for SIMD increment
-            let mut counters: Vec<u32> = unchanged_data.iter().map(|(_, c)| *c).collect();
-
-            // SIMD batch increment
-            crate::tile::increment_unchanged_counters(&mut counters);
-
-            // Write back incremented counters
-            for (idx, (tile_idx, _)) in unchanged_data.iter().enumerate() {
-                self.tile_metadata[*tile_idx].unchanged_frames = counters[idx];
-
-                // Update change history
-                let meta = &mut self.tile_metadata[*tile_idx];
+        // Two allocations plus a gather/scatter used to wrap a SIMD +1 here;
+        // a direct in-place pass over the metadata is both simpler and faster.
+        for (meta, &changed) in self.tile_metadata.iter_mut().zip(&self.changed_mask) {
+            if !changed {
+                meta.unchanged_frames += 1;
                 meta.change_history.push(false);
             }
         }

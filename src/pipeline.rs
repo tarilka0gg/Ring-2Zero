@@ -128,24 +128,14 @@ impl Pipeline {
             return None;
         }
 
-        let (tile_width, tile_height, tiles_y) =
-            self.config.calculate_tile_dimensions(width, height);
+        let grid = self.config.grid(width, height);
 
-        let merged_tiles = self.tile_merger.merge(
-            &changed_tiles,
-            self.config.tiles_x,
-            tiles_y,
-            tile_width,
-            tile_height,
-            width,
-            height,
-        );
+        let merged_tiles = self.tile_merger.merge(&changed_tiles, &grid);
 
         let mut tiles_with_data: Vec<(Tile, usize, f32)> = merged_tiles
             .iter()
             .map(|tile| {
-                let tile_idx =
-                    tile.representative_index(tile_width, tile_height, self.config.tiles_x);
+                let tile_idx = tile.representative_index(&grid);
                 let metadata = self.diff_detector.get_metadata(tile_idx);
                 let priority = Self::priority(tile, metadata, width, height, &self.config);
                 (*tile, tile_idx, priority)
@@ -163,9 +153,7 @@ impl Pipeline {
         // covered cell has since changed. Restrict the cache
         // fast-path to genuinely single-cell tiles, where the
         // representative hash actually covers the whole tile.
-        let is_single_cell = |tile: &Tile| {
-            tile.is_single_cell(tile_width, tile_height, self.config.tiles_x, tiles_y)
-        };
+        let is_single_cell = |tile: &Tile| tile.is_single_cell(&grid);
 
         tiles_with_data.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -182,9 +170,7 @@ impl Pipeline {
         // only the one representative cell would ever get re-armed.
         let ack_indices: Vec<usize> = sorted_tiles
             .iter()
-            .flat_map(|tile| {
-                tile.covered_indices(tile_width, tile_height, self.config.tiles_x, tiles_y)
-            })
+            .flat_map(|tile| tile.covered_indices(&grid))
             .collect();
 
         let tile_hashes: Vec<u64> = sorted_tile_indices

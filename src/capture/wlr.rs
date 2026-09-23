@@ -286,18 +286,16 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for WlrState {
     ) {
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer {
-                format,
+                format: WEnum::Value(fmt),
                 width,
                 height,
                 stride,
             } => {
-                if let WEnum::Value(fmt) = format {
-                    state.frame_info.shm_format = Some(fmt);
-                    state.frame_info.shm_width = width;
-                    state.frame_info.shm_height = height;
-                    state.frame_info.shm_stride = stride;
-                    state.frame_info.got_shm = true;
-                }
+                state.frame_info.shm_format = Some(fmt);
+                state.frame_info.shm_width = width;
+                state.frame_info.shm_height = height;
+                state.frame_info.shm_stride = stride;
+                state.frame_info.got_shm = true;
             }
             zwlr_screencopy_frame_v1::Event::LinuxDmabuf {
                 format,

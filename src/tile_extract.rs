@@ -194,11 +194,8 @@ mod tests {
 
     #[test]
     fn test_extract_tile_partial_width() {
-        let mut frame = vec![0u8; 1920 * 1080 * 4];
-        // Fill test pattern
-        for i in 0..frame.len() {
-            frame[i] = (i % 256) as u8;
-        }
+        // Test pattern: each byte is its offset mod 256
+        let frame: Vec<u8> = (0..1920 * 1080 * 4).map(|i| (i % 256) as u8).collect();
 
         let mut tile = vec![0u8; 48 * 27 * 4];
         extract_tile(&frame, &mut tile, 100, 50, 48, 27, 1920);
