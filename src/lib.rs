@@ -4,6 +4,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod frame;
+pub mod input;
 pub mod shm;
 pub mod convert;
 pub mod capture;

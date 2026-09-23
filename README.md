@@ -19,6 +19,8 @@ High-performance Wayland screen streaming server with WebRTC support.
 - **Auto-reconnect** — WebSocket stays alive across WebRTC re-negotiations
 - **SIMD optimizations** — AVX2/SSE2 for hashing, tile extraction, BGRX→RGBA conversion
 - **Parallel encoding pool** with worker threads
+- **Remote control** (opt-in, `--control`) — drive the host's mouse and keyboard from the browser, via the compositor's virtual-pointer/virtual-keyboard protocols
+- **Works across NAT** with your own STUN/TURN servers (`RING2ZERO_ICE_SERVERS`), or with none at all on a LAN/VPN
 
 ## Quick start
 
@@ -78,15 +80,18 @@ Everything is configured via environment variables plus two CLI flags — no con
 | `RING2ZERO_ICE_INTERFACE` | unset (all interfaces) | Restrict ICE candidate gathering to one named interface (e.g. `tailscale0`) on multi-homed machines. |
 | `RING2ZERO_IPV4_ONLY` | unset (dual-stack) | Set to any value to exclude IPv6 ICE candidates — works around a dual-stack candidate-selection issue on some hosts. Don't set this on an IPv6-only path, it'll leave you with zero candidates. |
 | `RING2ZERO_MAX_FPS` | unset | Caps `target_fps`/`static_tile_fps`/`dynamic_tile_fps` uniformly to N (clamped to 1–1000) — a quick bandwidth-constrained testing knob. |
+| `RING2ZERO_ICE_SERVERS` | unset (host candidates only) | Comma-separated STUN/TURN servers: `stun:host:port`, `turn:user:pass@host:port[?transport=tcp]`, `turns:…`. Needed only across NAT — see [Remote access](#remote-access). The server hands the same list to the browser. A malformed entry stops startup with an error. |
+| `RING2ZERO_CONTROL` | unset | Same as `--control`. |
 
 CLI flags:
 
 | Flag | Effect |
 |---|---|
 | `--no-adaptive` | Skip the startup CPU benchmark, use the default `merge_gap=0`. |
-| `--debug` | Verbose per-tile/per-frame stats every 100 frames. |
+| `--debug` | Verbose per-tile/per-frame stats every 100 frames, plus per-frame send stats (log level `debug`). |
+| `--control` | Allow clients to control this machine's mouse and keyboard — see [Remote control](#remote-control). |
 
-`RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection.
+Logging goes through `env_logger`: the default is `warn,screen_streamer=info`; `RUST_LOG` overrides it. `RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection.
 
 Everything else (tile grid size, WebP quality range, priority weights, per-mode FPS) is a compile-time default in `Config` — see `src/config.rs` and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference) for the full field reference.
 
@@ -117,6 +122,12 @@ alongside the Tailscale one), ICE may otherwise advertise a candidate the
 remote peer can't reach. Set `RING2ZERO_ICE_INTERFACE=tailscale0` to restrict
 candidate gathering to just the VPN interface.
 
+Without a VPN, peers behind different NATs need STUN (and, behind
+symmetric NATs, a TURN relay) — pass your own via `RING2ZERO_ICE_SERVERS`,
+e.g. `stun:stun.l.google.com:19302,turn:user:pass@turn.example.org:3478`.
+The browser gets the same list after logging in, so there's nothing to
+configure on the client side.
+
 Find the server's Tailscale hostname (`tailscale status`, or rename the
 device with `tailscale set --hostname=<name>` for a nicer URL), then open
 `https://<name>.<tailnet>.ts.net:9001` from the viewing device — the page
@@ -125,20 +136,47 @@ needed.
 
 ## Authentication
 
-The signaling server requires a token, checked during the WebSocket
-handshake (`?token=...` query param). By default a random token is
-generated on each startup and printed to stdout; set `RING2ZERO_TOKEN` in
-the environment to use a fixed one instead. A connection without a
-matching token gets an HTTP 401 and is never upgraded.
+The signaling server requires a token. By default a random one is
+generated on each startup and printed to stdout; set `RING2ZERO_TOKEN` to
+use a fixed one instead.
 
-The client page (`client.html`) doesn't take the token via URL — it prompts
-for a password on first load and remembers it in the browser's
-`localStorage`, so the token never sits in the address bar/history. This is
-what `RING2ZERO_TOKEN` should be set to.
+The token is the client's **first WebSocket message**
+(`{"type":"auth","token":"…"}`), never part of the URL — so it doesn't end
+up in browser history or proxy access logs. It's compared in constant
+time; a client that doesn't send a valid one within 5 s is dropped, and a
+wrong one is answered (after a 1 s delay, against brute-forcing a weak
+`RING2ZERO_TOKEN`) with WebSocket close code `4001`. That code is what lets
+the page tell "wrong password" (asks again) apart from "server unreachable"
+(keeps the saved password and retries).
+
+The page prompts for the password on first load and remembers it in the
+browser's `localStorage`.
 
 This guards the signaling handshake itself, but is still no substitute for
 network-level isolation — prefer keeping the port reachable only over a
 VPN (like Tailscale above) rather than a public port-forward.
+
+## Remote control
+
+Start the server with `--control` (or `RING2ZERO_CONTROL=1`) and a
+**КЕРУВАННЯ** button appears in the page's status bar. While it's on,
+mouse, wheel and keyboard input over the picture is sent to the host.
+
+- Requires `zwlr_virtual_pointer_manager_v1` and
+  `zwp_virtual_keyboard_manager_v1` (niri, sway and other wlroots
+  compositors have both). The virtual keyboard reuses the compositor's
+  active keymap, and keys are sent by physical position
+  (`KeyboardEvent.code`), so the host's layout decides what gets typed.
+- The pointer is bound to the streamed output, so clicks land where you
+  see them even with several monitors.
+- Everything still held down is released automatically when the tab loses
+  focus, control is switched off, or the connection drops — no stuck keys.
+- Some shortcuts (Ctrl+W, Ctrl+T, …) are reserved by the browser and never
+  reach the page; fullscreen or an installed PWA window lets more through.
+
+**Security:** anyone with the token gets full keyboard and mouse access to
+your session. It's off by default; if you enable it, keep the port
+reachable only over a VPN.
 
 ## Performance
 
@@ -180,13 +218,19 @@ man/ring-2zero.1         — man page, installed by install.sh
 src/
 ├── main.rs               — entry point
 ├── server.rs             — WebSocket + WebRTC server, serves the client page over HTTP(S)
-├── stream.rs             — streaming loop, ACK system
+├── auth.rs               — first-message token authentication
+├── stream.rs             — one streaming session: glues the threads together
+├── pipeline.rs           — diff → merge → prioritise → encode, per frame
+├── transport.rs          — ACK tracking + sending over the DataChannel
+├── protocol.rs           — binary wire format (DataChannel messages)
+├── input.rs              — remote control: virtual pointer/keyboard injection
+├── ice.rs                — STUN/TURN configuration
 ├── capture/
 │   ├── mod.rs            — backend auto-detection
 │   ├── wlr.rs            — wlr-screencopy (DMA-BUF + SHM fallback)
 │   └── pipewire.rs       — PipeWire via portal (feature-gated)
 ├── diff.rs               — tile change detection
-├── encoder.rs            — WebP encoding + tile merging
+├── encoder.rs            — tile merging
 ├── encoding_pool.rs      — parallel worker pool
 ├── tile.rs               — Tile/TileMetadata, hashing (AVX2/SSE2)
 ├── tile_extract.rs       — tile extraction (AVX2/SSE2)
@@ -207,7 +251,7 @@ For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.
 
 ## Changelog
 
-Latest (**v0.300.1**): fixed a real hash collision — two different solid-color tiles of the same size could hash identically, silently missing a diff. `install.sh` handles dependencies/compiler/build/alias/man-page end-to-end, `--help` and `man ring-2zero` both work properly now, and unit tests now cover what used to be untested (`diff.rs`, `encoder.rs`, `stream.rs`, and the rest).
+Latest (**v0.400.0**, "remaster"): remote mouse/keyboard control (`--control`), STUN/TURN support for use across NAT, the auth token moved out of the URL into the first WebSocket message, the streaming core split into small tested modules, and a batch of reliability fixes (lost tiles on a static screen now get re-sent, frame pacing no longer drifts, the client reconnects on its own). **The client/server protocol changed** — use the page served by the same binary.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md).
 

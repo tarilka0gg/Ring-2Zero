@@ -37,6 +37,13 @@ pub struct Config {
     /// would break connectivity outright on an IPv6-only path if it were
     /// unconditional.
     pub ice_ipv4_only: bool,
+    /// RING2ZERO_ICE_SERVERS — STUN/TURN servers (see `ice.rs`), parsed and
+    /// validated by main.rs at startup. Empty: host candidates only.
+    pub ice_servers: Vec<crate::ice::IceServer>,
+    /// `--control` / RING2ZERO_CONTROL — let authenticated clients drive
+    /// the host's mouse and keyboard. Off by default: anyone holding the
+    /// token gets full input access to the desktop.
+    pub control: bool,
 }
 
 impl Default for Config {
@@ -59,6 +66,8 @@ impl Default for Config {
             tls_key_path: std::env::var("RING2ZERO_TLS_KEY").ok(),
             ice_interface: std::env::var("RING2ZERO_ICE_INTERFACE").ok(),
             ice_ipv4_only: std::env::var("RING2ZERO_IPV4_ONLY").is_ok(),
+            ice_servers: Vec::new(),
+            control: std::env::var("RING2ZERO_CONTROL").is_ok(),
         };
         config.apply_max_fps_override();
         config
