@@ -135,13 +135,9 @@ impl Config {
         std::time::Duration::from_nanos(1_000_000_000 / self.target_fps.get())
     }
 
-    /// Calculate tile dimensions for given frame size
-    /// Returns (tile_width, tile_height, tiles_y)
-    pub fn calculate_tile_dimensions(&self, width: u32, height: u32) -> (u32, u32, u32) {
-        let tile_width = width / self.tiles_x;
-        let tile_height = tile_width * height / width;
-        let tiles_y = height.div_ceil(tile_height);
-        (tile_width, tile_height, tiles_y)
+    /// The tile grid for a `width`×`height` frame.
+    pub fn grid(&self, width: u32, height: u32) -> crate::tile::Grid {
+        crate::tile::Grid::new(self.tiles_x, width, height)
     }
 
     /// Auto-detect optimal merge_gap based on CPU encoding speed
@@ -391,18 +387,6 @@ mod tests {
         assert!(Config::parse_max_fps("not-a-number").is_none());
         assert!(Config::parse_max_fps("-5").is_none());
         assert!(Config::parse_max_fps("").is_none());
-    }
-
-    #[test]
-    fn calculate_tile_dimensions_matches_expected_grid() {
-        let config = Config {
-            tiles_x: 20,
-            ..Config::default()
-        };
-        let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(1920, 1080);
-        assert_eq!(tile_width, 96); // 1920 / 20
-        assert_eq!(tile_height, 54); // 96 * 1080 / 1920
-        assert_eq!(tiles_y, 20); // ceil(1080 / 54)
     }
 
     #[test]

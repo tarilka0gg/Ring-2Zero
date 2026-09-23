@@ -1,5 +1,15 @@
-use crate::tile::Tile;
+use crate::tile::{Grid, Tile};
 use std::collections::{HashMap, HashSet};
+
+/// The maximum number of original grid tiles a single merged tile can span in
+/// each direction. Without this, a full-screen refresh (all tiles dirty, all
+/// contiguous) merges into one tile covering the entire frame — its encoded
+/// size can exceed the WebRTC DataChannel's message-size limit (observed: an
+/// 85 KB single-tile send tripped "outbound packet larger than maximum message
+/// size" on a real client). Chunking bounds the worst case regardless of how
+/// large a contiguous dirty region is.
+pub const MAX_MERGE_TILES_X: u32 = 4;
+pub const MAX_MERGE_TILES_Y: u32 = 4;
 
 pub struct TileMerger {
     merge_gap: u32,
@@ -10,45 +20,25 @@ impl TileMerger {
         Self { merge_gap }
     }
 
-    pub fn merge(
-        &self,
-        tiles: &[Tile],
-        tiles_x: u32,
-        tiles_y: u32,
-        tile_width: u32,
-        tile_height: u32,
-        frame_width: u32,
-        frame_height: u32,
-    ) -> Vec<Tile> {
+    pub fn merge(&self, tiles: &[Tile], grid: &Grid) -> Vec<Tile> {
         let tile_set: HashSet<(u32, u32)> = tiles
             .iter()
-            .map(|t| (t.x / tile_width, t.y / tile_height))
+            .map(|t| (t.x / grid.tile_width, t.y / grid.tile_height))
             .collect();
 
         // Build spatial index once: O(m) instead of O(m×n)
         let tile_quality_map: HashMap<(u32, u32), f32> = tiles
             .iter()
-            .map(|t| ((t.x / tile_width, t.y / tile_height), t.quality))
+            .map(|t| ((t.x / grid.tile_width, t.y / grid.tile_height), t.quality))
             .collect();
 
         let mut run_cols: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
 
-        for tx in 0..tiles_x {
-            for run in self.column_runs(&tile_set, tx, tiles_y) {
+        for tx in 0..grid.tiles_x {
+            for run in self.column_runs(&tile_set, tx, grid.tiles_y) {
                 run_cols.entry(run).or_default().push(tx);
             }
         }
-
-        // Cap how many original grid tiles a single merged tile can span in
-        // each direction. Without this, a full-screen refresh (all tiles
-        // dirty, all contiguous) merges into one tile covering the entire
-        // frame — its encoded size can exceed the WebRTC DataChannel's
-        // message-size limit (observed: an 85 KB single-tile send tripped
-        // "outbound packet larger than maximum message size" on a real
-        // client). Chunking bounds the worst case regardless of how large a
-        // contiguous dirty region is.
-        const MAX_MERGE_TILES_X: u32 = 4;
-        const MAX_MERGE_TILES_Y: u32 = 4;
 
         let mut merged = Vec::new();
 
@@ -68,10 +58,9 @@ impl TileMerger {
                         while chunk_tx_start <= tx_end {
                             let chunk_tx_end = (chunk_tx_start + MAX_MERGE_TILES_X - 1).min(tx_end);
 
-                            let x = chunk_tx_start * tile_width;
-                            let y = chunk_ty_start * tile_height;
-                            let width = ((chunk_tx_end + 1) * tile_width).min(frame_width) - x;
-                            let height = ((chunk_ty_end + 1) * tile_height).min(frame_height) - y;
+                            let (x, x_end) = grid.x_span(chunk_tx_start, chunk_tx_end);
+                            let (y, y_end) = grid.y_span(chunk_ty_start, chunk_ty_end);
+                            let (width, height) = (x_end - x, y_end - y);
 
                             let quality = self.average_quality_fast(
                                 &tile_quality_map,
@@ -163,11 +152,22 @@ mod tests {
     const TILE_W: u32 = 10;
     const TILE_H: u32 = 10;
 
+    fn grid(tiles_x: u32, tiles_y: u32, frame_width: u32, frame_height: u32) -> Grid {
+        Grid {
+            tiles_x,
+            tiles_y,
+            tile_width: TILE_W,
+            tile_height: TILE_H,
+            frame_width,
+            frame_height,
+        }
+    }
+
     #[test]
     fn single_tile_passes_through_unchanged() {
         let merger = TileMerger::new(0);
         let tiles = [Tile::new(10, 10, TILE_W, TILE_H, 5.0)]; // grid cell (1,1)
-        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        let merged = merger.merge(&tiles, &grid(4, 4, 40, 40));
         assert_eq!(merged.len(), 1);
         assert_eq!(
             (merged[0].x, merged[0].y, merged[0].width, merged[0].height),
@@ -183,7 +183,7 @@ mod tests {
             Tile::new(10, 10, TILE_W, TILE_H, 4.0), // cell (1,1)
             Tile::new(20, 10, TILE_W, TILE_H, 8.0), // cell (2,1), adjacent
         ];
-        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        let merged = merger.merge(&tiles, &grid(4, 4, 40, 40));
         assert_eq!(merged.len(), 1);
         let t = &merged[0];
         assert_eq!((t.x, t.y, t.width, t.height), (10, 10, 20, 10));
@@ -197,7 +197,7 @@ mod tests {
             Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
             Tile::new(30, 0, TILE_W, TILE_H, 5.0), // cell (3,0) — two empty columns between
         ];
-        let merged = merger.merge(&tiles, 4, 4, TILE_W, TILE_H, 40, 40);
+        let merged = merger.merge(&tiles, &grid(4, 4, 40, 40));
         assert_eq!(merged.len(), 2);
     }
 
@@ -211,7 +211,7 @@ mod tests {
             Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
             Tile::new(0, 20, TILE_W, TILE_H, 5.0), // cell (0,2) — row 1 empty
         ];
-        let merged = merger.merge(&tiles, 1, 3, TILE_W, TILE_H, 10, 30);
+        let merged = merger.merge(&tiles, &grid(1, 3, 10, 30));
         assert_eq!(merged.len(), 1);
         assert_eq!((merged[0].y, merged[0].height), (0, 30));
     }
@@ -223,7 +223,7 @@ mod tests {
             Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
             Tile::new(0, 30, TILE_W, TILE_H, 5.0), // cell (0,3) — rows 1,2 empty
         ];
-        let merged = merger.merge(&tiles, 1, 4, TILE_W, TILE_H, 10, 40);
+        let merged = merger.merge(&tiles, &grid(1, 4, 10, 40));
         assert_eq!(merged.len(), 2);
     }
 
@@ -234,7 +234,7 @@ mod tests {
             Tile::new(0, 0, TILE_W, TILE_H, 5.0),  // cell (0,0)
             Tile::new(0, 30, TILE_W, TILE_H, 5.0), // cell (0,3) — rows 1,2 empty
         ];
-        let merged = merger.merge(&tiles, 1, 4, TILE_W, TILE_H, 10, 40);
+        let merged = merger.merge(&tiles, &grid(1, 4, 10, 40));
         assert_eq!(merged.len(), 1);
         assert_eq!((merged[0].y, merged[0].height), (0, 40));
     }
@@ -255,12 +255,7 @@ mod tests {
         }
         let merged = merger.merge(
             &tiles,
-            tiles_x,
-            tiles_y,
-            TILE_W,
-            TILE_H,
-            tiles_x * TILE_W,
-            tiles_y * TILE_H,
+            &grid(tiles_x, tiles_y, tiles_x * TILE_W, tiles_y * TILE_H),
         );
         // An 8x8 grid entirely dirty must chunk into 2x2 = 4 pieces of at
         // most 4x4 cells each, never one single 8x8 blob.
@@ -280,9 +275,19 @@ mod tests {
     }
 
     #[test]
+    fn a_tile_in_the_last_column_keeps_the_remainder_pixels() {
+        // 1366 / 20 = 68 px columns; the last one is 74 px wide in diff.rs,
+        // and merging must not trim it back to 68.
+        let grid = Grid::new(20, 1366, 768);
+        let last = Tile::new(19 * 68, 0, 1366 - 19 * 68, grid.tile_height, 5.0);
+        let merged = TileMerger::new(0).merge(&[last], &grid);
+        assert_eq!((merged[0].x, merged[0].width), (1292, 74));
+    }
+
+    #[test]
     fn empty_input_produces_no_merged_tiles() {
         let merger = TileMerger::new(0);
-        let merged = merger.merge(&[], 4, 4, TILE_W, TILE_H, 40, 40);
+        let merged = merger.merge(&[], &grid(4, 4, 40, 40));
         assert!(merged.is_empty());
     }
 }

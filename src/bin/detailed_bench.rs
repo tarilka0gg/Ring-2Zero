@@ -146,7 +146,8 @@ fn benchmark_scenario(
     let mut diff_detector = DiffDetector::new(config.clone());
     let tile_merger = TileMerger::new(config.merge_gap);
 
-    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
+    let grid = config.grid(width, height);
+    let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
     // Baseline frame - створюємо реалістичний статичний фон
     let baseline = generate_scenario_frame(width, height, 0, scenario);
@@ -179,15 +180,7 @@ fn benchmark_scenario(
 
         // Tile merging
         let t1 = Instant::now();
-        let merged_tiles = tile_merger.merge(
-            &changed_tiles,
-            config.tiles_x,
-            tiles_y,
-            tile_width,
-            tile_height,
-            width,
-            height,
-        );
+        let merged_tiles = tile_merger.merge(&changed_tiles, &grid);
         total_merge_ms += t1.elapsed().as_secs_f64() * 1000.0;
 
         total_tiles_after += merged_tiles.len();
