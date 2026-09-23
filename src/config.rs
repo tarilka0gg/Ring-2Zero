@@ -18,7 +18,6 @@ pub struct Config {
     pub webp_quality_low: f32,
     pub webp_quality_high: f32,
     pub merge_gap: u32,
-    pub priority_history_window: usize,
     pub priority_frequency_weight: f32,
     pub priority_speed_weight: f32,
     pub priority_center_weight: f32,
@@ -49,7 +48,6 @@ impl Default for Config {
             webp_quality_low: 1.0,
             webp_quality_high: 10.0,
             merge_gap: 0,
-            priority_history_window: 30,
             priority_frequency_weight: 0.5,
             priority_speed_weight: 0.3,
             priority_center_weight: 0.2,
@@ -83,11 +81,9 @@ impl Config {
     /// state. Returns `None` for a value that doesn't parse as a `u64`.
     fn parse_max_fps(input: &str) -> Option<std::num::NonZeroU64> {
         let fps = input.parse::<u64>().ok()?;
-        // Clamped to 1000: frame_duration() is `1000 / fps` in whole
-        // milliseconds, so anything above 1000 would truncate to a 0ms
-        // duration, turning the cap into an uncapped busy-loop instead of
-        // throttling anything. Clamped to a minimum of 1 since 0 isn't a
-        // valid NonZeroU64.
+        // Clamped to 1000: above that a frame budget is under a millisecond,
+        // which the capture/encode loop can't meet anyway — it would just
+        // spin. Clamped to a minimum of 1 since 0 isn't a valid NonZeroU64.
         std::num::NonZeroU64::new(fps.clamp(1, 1000))
     }
 
@@ -121,7 +117,9 @@ impl Config {
     }
 
     pub fn frame_duration(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(1000 / self.target_fps.get())
+        // Nanosecond precision: whole milliseconds would turn 60 FPS into
+        // 16ms (62.5 FPS) and drift further for any rate not dividing 1000.
+        std::time::Duration::from_nanos(1_000_000_000 / self.target_fps.get())
     }
 
     /// Calculate tile dimensions for given frame size
@@ -370,6 +368,12 @@ mod tests {
     fn frame_duration_matches_target_fps() {
         let config = Config { target_fps: std::num::NonZeroU64::new(50).unwrap(), ..Config::default() };
         assert_eq!(config.frame_duration(), std::time::Duration::from_millis(20));
+    }
+
+    #[test]
+    fn frame_duration_does_not_round_60_fps_to_whole_milliseconds() {
+        let config = Config { target_fps: std::num::NonZeroU64::new(60).unwrap(), ..Config::default() };
+        assert_eq!(config.frame_duration(), std::time::Duration::from_nanos(16_666_666));
     }
 
     #[test]
