@@ -305,16 +305,38 @@ where
 
         let input = webrtc_conn.input_channel.as_ref().map(input::attach);
 
-        match stream::run_session(
+        // Keep reading the WebSocket while streaming: otherwise a closed tab
+        // or a client-initiated close goes unnoticed (the browser hangs in
+        // CLOSING waiting for our close reply) and capture + encoding keep
+        // running until SCTP times out ~30 s later.
+        let mut session = Box::pin(stream::run_session(
             config.clone(),
             Arc::clone(&webrtc_conn.data_channel),
             frame_rx,
-        )
-        .await
-        {
-            Ok(_) => log::info!("Stream ended normally, attempting reconnect..."),
-            Err(e) => log::error!("Stream error: {e}, attempting reconnect..."),
-        }
+        ));
+        let client_gone = loop {
+            tokio::select! {
+                result = &mut session => {
+                    match result {
+                        Ok(()) => log::info!("Stream ended, renegotiating"),
+                        Err(e) => log::warn!("Stream error: {e}, renegotiating"),
+                    }
+                    break false;
+                }
+                msg = ws_receiver.next() => match msg {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
+                        log::info!("Client closed the WebSocket, ending the session");
+                        break true;
+                    }
+                    // Late messages of this or an older negotiation (e.g.
+                    // trailing ICE candidates) — nothing to do mid-stream.
+                    Some(Ok(_)) => {}
+                },
+            }
+        };
+        // Dropping an unfinished session closes its encode channel, which
+        // stops the processing thread right away.
+        drop(session);
 
         if let Some(session) = input {
             session.detach().await;
@@ -332,6 +354,9 @@ where
             log::warn!("Capture thread did not stop within 5s, abandoning it");
         }
 
+        if client_gone {
+            break;
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 

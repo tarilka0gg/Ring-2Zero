@@ -233,13 +233,14 @@ async fn main() -> Result<()> {
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
     // checks, mDNS query results) when troubleshooting a connection.
     let debug = args.iter().any(|a| a == "--debug");
-    // webrtc-rs's dtls crate warns about every standard TLS extension a
-    // browser's ClientHello carries ("Unsupported Extension Type") — noise,
-    // not a problem, so it's held to errors.
+    // webrtc-rs is noisy at warn: dtls flags every standard extension in a
+    // browser's ClientHello, and webrtc_ice every IPv6 link-local address it
+    // can't bind and every late STUN reply. Held to errors by default;
+    // RUST_LOG=webrtc_ice=debug brings them back when debugging ICE.
     let default_filter = if debug {
-        "warn,dtls=error,screen_streamer=debug"
+        "warn,dtls=error,webrtc_ice=error,screen_streamer=debug"
     } else {
-        "warn,dtls=error,screen_streamer=info"
+        "warn,dtls=error,webrtc_ice=error,screen_streamer=info"
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .init();

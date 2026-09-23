@@ -91,7 +91,7 @@ CLI flags:
 | `--debug` | Verbose per-tile/per-frame stats every 100 frames, plus per-frame send stats (log level `debug`). |
 | `--control` | Allow clients to control this machine's mouse and keyboard — see [Remote control](#remote-control). |
 
-Logging goes through `env_logger`: the default is `warn,dtls=error,screen_streamer=info`; `RUST_LOG` overrides it. `RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection.
+Logging goes through `env_logger`: the default is `warn,dtls=error,webrtc_ice=error,screen_streamer=info`; `RUST_LOG` overrides it. `RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection.
 
 Everything else (tile grid size, WebP quality range, priority weights, per-mode FPS) is a compile-time default in `Config` — see `src/config.rs` and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#configuration-reference) for the full field reference.
 
