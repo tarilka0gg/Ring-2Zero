@@ -298,8 +298,10 @@ where
                     return;
                 }
             };
-            if let Err(e) = capture.run(frame_duration) {
-                log::error!("Capture error: {e}");
+            match capture.run(frame_duration) {
+                // The session ended and dropped its receiver: normal teardown.
+                Ok(()) | Err(Error::ConsumerDisconnected) => {}
+                Err(e) => log::error!("Capture error: {e}"),
             }
         });
 

@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 
 #include <dbus/dbus.h>
 
@@ -135,6 +136,18 @@ static void on_process(void *data)
     pw_stream_queue_buffer(ctx->stream, pwbuf);
 }
 
+/* KNOWN ISSUE (2026-09-24): in testing under a private/nested portal
+ * sandbox, the client stream reliably reaches PW_STREAM_STATE_STREAMING
+ * with a correctly negotiated format (confirmed via on_param_changed
+ * SPA_PARAM_Format), but on_process below is then never invoked, so no
+ * pixel data ever reaches on_frame_cb / the Rust side. Portal negotiation
+ * itself (CreateSession/SelectSources/Start, see the fixes above and in
+ * wait_for_response/parse_session/parse_start) is confirmed solid and no
+ * longer the blocker. Not yet root-caused — worth checking: whether an
+ * explicit pw_stream_set_active() is needed here, whether .add_buffer /
+ * .remove_buffer stream_events need to be hooked (the server side logs
+ * sending 2 "add buffer" events we don't handle), or whether this is
+ * specific to the private-bus/nested-compositor sandbox used to test it. */
 static const struct pw_stream_events stream_events = {
     PW_VERSION_STREAM_EVENTS,
     .param_changed = on_param_changed,
@@ -217,59 +230,60 @@ static int run_pw_stream(int pw_fd, uint32_t node_id, struct pw_ctx *ctx)
 /* ── D-Bus portal helpers ───────────────────────────────────────────────── */
 
 /*
- * Waits (blocking) for a org.freedesktop.portal.Request.Response signal
- * on the given object path.  Returns the response result (0=success).
- * On success, calls parse_cb(reply_iter, cb_data) to extract result data.
+ * Waits for the org.freedesktop.portal.Request.Response signal on
+ * request_path, for at most timeout_ms in total, returning early (-1) when
+ * *stop becomes non-zero. The caller must already have added a match rule
+ * for that signal (see portal_call). Returns the response code negated on
+ * failure, or parse_cb's result / 0 on success.
  */
 typedef int (*parse_response_cb)(DBusMessageIter *iter, void *data);
 
+static long long now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static int wait_for_response(DBusConnection *bus, const char *request_path,
-                              int timeout_ms,
+                              int timeout_ms, volatile int *stop,
                               parse_response_cb parse_cb, void *cb_data)
 {
-    /* Filter: match the specific request handle signal */
-    char match[512];
-    snprintf(match, sizeof(match),
-        "type='signal',"
-        "interface='org.freedesktop.portal.Request',"
-        "member='Response',"
-        "path='%s'",
-        request_path);
-    dbus_bus_add_match(bus, match, NULL);
-    dbus_connection_flush(bus);
+    const long long deadline = now_ms() + timeout_ms;
 
-    int result = -1;
-    while (dbus_connection_read_write(bus, timeout_ms)) {
-        DBusMessage *msg = dbus_connection_pop_message(bus);
-        if (!msg) continue;
+    while (!*stop && now_ms() < deadline) {
+        /* Short slices so a stop request is honoured within ~100 ms */
+        if (!dbus_connection_read_write(bus, 100))
+            return -1; /* disconnected */
 
-        if (dbus_message_is_signal(msg,
-                "org.freedesktop.portal.Request", "Response") &&
-            strcmp(dbus_message_get_path(msg), request_path) == 0) {
+        DBusMessage *msg;
+        while ((msg = dbus_connection_pop_message(bus)) != NULL) {
+            if (dbus_message_is_signal(msg,
+                    "org.freedesktop.portal.Request", "Response") &&
+                strcmp(dbus_message_get_path(msg), request_path) == 0) {
 
-            DBusMessageIter iter;
-            dbus_message_iter_init(msg, &iter);
+                DBusMessageIter iter;
+                dbus_message_iter_init(msg, &iter);
 
-            uint32_t response_code = 0;
-            dbus_message_iter_get_basic(&iter, &response_code);
-            dbus_message_iter_next(&iter);
+                uint32_t response_code = 0;
+                dbus_message_iter_get_basic(&iter, &response_code);
+                dbus_message_iter_next(&iter);
 
-            if (response_code == 0 && parse_cb) {
-                result = parse_cb(&iter, cb_data);
-            } else if (response_code == 0) {
-                result = 0;
-            } else {
-                result = -(int)response_code;
+                int result;
+                if (response_code == 0 && parse_cb)
+                    result = parse_cb(&iter, cb_data);
+                else if (response_code == 0)
+                    result = 0;
+                else
+                    result = -(int)response_code;
+
+                dbus_message_unref(msg);
+                return result;
             }
-
             dbus_message_unref(msg);
-            break;
         }
-        dbus_message_unref(msg);
     }
-
-    dbus_bus_remove_match(bus, match, NULL);
-    return result;
+    return -1; /* timed out or stopped */
 }
 
 /*
@@ -315,12 +329,21 @@ static int parse_session(DBusMessageIter *iter, void *data)
         dbus_message_iter_recurse(&entry, &val);
 
         if (key && strcmp(key, "session_handle") == 0) {
-            /* val is variant containing object path */
-            if (dbus_message_iter_get_arg_type(&val) == DBUS_TYPE_VARIANT) {
-                DBusMessageIter inner;
-                dbus_message_iter_recurse(&val, &inner);
+            /* dbus_message_iter_recurse(&entry, &val) above already
+             * unwrapped the variant: val's type here is the variant's
+             * actual payload, not DBUS_TYPE_VARIANT itself (checking for
+             * DBUS_TYPE_VARIANT again, as this used to, can never be true,
+             * so the response was silently discarded on every call, even a
+             * successful one). The portal sends session_handle as a plain
+             * DBUS_TYPE_STRING here, not DBUS_TYPE_OBJECT_PATH, even
+             * though CreateSession's own *argument* uses a real object
+             * path (confirmed against a live xdg-desktop-portal-wlr:
+             * `variant string "/org/freedesktop/portal/desktop/session/..."`)
+             * — both are read identically via get_basic, so accept either. */
+            int t = dbus_message_iter_get_arg_type(&val);
+            if (t == DBUS_TYPE_STRING || t == DBUS_TYPE_OBJECT_PATH) {
                 const char *path = NULL;
-                dbus_message_iter_get_basic(&inner, &path);
+                dbus_message_iter_get_basic(&val, &path);
                 if (path) strncpy(d->session_path, path, sizeof(d->session_path)-1);
             }
         }
@@ -348,12 +371,12 @@ static int parse_start(DBusMessageIter *iter, void *data)
         dbus_message_iter_recurse(&entry, &val);
 
         if (key && strcmp(key, "streams") == 0) {
-            /* variant → a(ua{sv}) */
-            if (dbus_message_iter_get_arg_type(&val) == DBUS_TYPE_VARIANT) {
-                DBusMessageIter inner, streams;
-                dbus_message_iter_recurse(&val, &inner);
-                if (dbus_message_iter_get_arg_type(&inner) != DBUS_TYPE_ARRAY) break;
-                dbus_message_iter_recurse(&inner, &streams);
+            /* Same unwrap-depth bug as parse_session above: val is already
+             * the variant's payload, i.e. directly the a(ua{sv}) array —
+             * not a variant to recurse into again. */
+            if (dbus_message_iter_get_arg_type(&val) == DBUS_TYPE_ARRAY) {
+                DBusMessageIter streams;
+                dbus_message_iter_recurse(&val, &streams);
 
                 if (dbus_message_iter_get_arg_type(&streams) == DBUS_TYPE_STRUCT) {
                     DBusMessageIter stream_entry;
@@ -374,9 +397,25 @@ static int portal_call(DBusConnection *bus,
                        const char *method,
                        void (*add_args)(DBusMessage *msg, void *arg), void *arg,
                        const char *request_path,
-                       int timeout_ms,
+                       int timeout_ms, volatile int *stop,
                        parse_response_cb parse_cb, void *cb_data)
 {
+    /*
+     * Subscribe to the Response signal BEFORE making the call. A portal that
+     * answers immediately (xdg-desktop-portal-wlr's CreateSession, or any
+     * backend configured without a chooser dialog) emits the signal before
+     * the method reply is even processed here; subscribing afterwards lost
+     * it and the call "failed" after a 30 s wait.
+     */
+    char match[512];
+    snprintf(match, sizeof(match),
+        "type='signal',"
+        "interface='org.freedesktop.portal.Request',"
+        "member='Response',"
+        "path='%s'",
+        request_path);
+    dbus_bus_add_match(bus, match, NULL);
+
     DBusMessage *msg = dbus_message_new_method_call(
         "org.freedesktop.portal.Desktop",
         "/org/freedesktop/portal/desktop",
@@ -388,17 +427,21 @@ static int portal_call(DBusConnection *bus,
 
     DBusError err;
     dbus_error_init(&err);
+    /* The method itself only returns the request handle; the real answer is
+     * the Response signal, which may take as long as the user needs. */
     DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        bus, msg, timeout_ms, &err);
+        bus, msg, 10000, &err);
     dbus_message_unref(msg);
 
-    if (!reply || dbus_error_is_set(&err)) {
-        dbus_error_free(&err);
-        return -1;
+    int result = -1;
+    if (reply && !dbus_error_is_set(&err)) {
+        dbus_message_unref(reply);
+        result = wait_for_response(bus, request_path, timeout_ms, stop,
+                                   parse_cb, cb_data);
     }
-    dbus_message_unref(reply);
-
-    return wait_for_response(bus, request_path, timeout_ms, parse_cb, cb_data);
+    dbus_error_free(&err);
+    dbus_bus_remove_match(bus, match, NULL);
+    return result;
 }
 
 /* ── CreateSession ─────────────────────────────────────────────────────── */
@@ -553,6 +596,32 @@ static int open_pw_remote(DBusConnection *bus, const char *session_handle)
     return fd;
 }
 
+/*
+ * Fire-and-forget close of a portal Session object. Every CreateSession
+ * that succeeds must be matched by exactly one of these, on every exit path
+ * (error or clean stop) — otherwise a session that's never explicitly
+ * closed lingers in the portal backend. Observed in testing: enough
+ * abandoned sessions (from repeated capture retries after a failure, with
+ * no backoff above it) made xdg-desktop-portal-wlr's own sd_bus_add_object_
+ * vtable() start failing with EAGAIN, breaking ScreenCast for the rest of
+ * that backend's lifetime, not just for this client.
+ */
+static void close_portal_session(DBusConnection *bus, const char *session_path)
+{
+    if (!bus || !session_path || !*session_path) return;
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.freedesktop.portal.Desktop",
+        session_path,
+        "org.freedesktop.impl.portal.Session",
+        "Close");
+    if (!msg) return;
+    /* No reply needed, and no response signal to wait for. */
+    dbus_message_set_no_reply(msg, TRUE);
+    dbus_connection_send(bus, msg, NULL);
+    dbus_connection_flush(bus);
+    dbus_message_unref(msg);
+}
+
 /* ── Public entry point ─────────────────────────────────────────────────── */
 
 int pw_capture_start(
@@ -578,14 +647,26 @@ int pw_capture_start(
     /* 1. CreateSession */
     char htok1[64], hpath1[256];
     char stok[64];
-    snprintf(stok, sizeof(stok), "ring2zero_sess_%u", (unsigned)getpid());
+    /* Must be unique per CALL, not just per process: this function is
+     * retried from the same long-lived process on every capture failure
+     * (backend crash, portal timeout, user cancel), and a session token
+     * that only encoded the pid was identical on every retry. The portal
+     * forwards CreateSession's caller-supplied session path unchanged to
+     * the backend, so a second attempt while the first session's object
+     * was still registered (Close() not yet processed, or simply racing
+     * the retry) had the wlr backend try to add a D-Bus vtable at a path
+     * it already had one on — observed as CreateSession failing forever
+     * after the first retry, with xdg-desktop-portal-wlr logging
+     * "sd_bus_add_object_vtable failed: Unknown error -11". */
+    snprintf(stok, sizeof(stok), "ring2zero_sess_%u_%lld",
+             (unsigned)getpid(), now_ms());
     make_token(sender, htok1, sizeof(htok1), hpath1, sizeof(hpath1), "cs");
 
     struct session_parse_data sess_data = {0};
     struct create_session_args cs_args = { htok1, stok };
     if (portal_call(bus, "CreateSession",
                     add_create_session_args, &cs_args,
-                    hpath1, 30000, parse_session, &sess_data) < 0) {
+                    hpath1, 30000, stop_flag, parse_session, &sess_data) < 0) {
         snprintf(err_buf, err_len, "CreateSession failed");
         dbus_connection_unref(bus);
         return -1;
@@ -597,8 +678,9 @@ int pw_capture_start(
     struct select_sources_args ss_args = { sess_data.session_path, htok2 };
     if (portal_call(bus, "SelectSources",
                     add_select_sources_args, &ss_args,
-                    hpath2, 30000, NULL, NULL) < 0) {
+                    hpath2, 30000, stop_flag, NULL, NULL) < 0) {
         snprintf(err_buf, err_len, "SelectSources failed");
+        close_portal_session(bus, sess_data.session_path);
         dbus_connection_unref(bus);
         return -1;
     }
@@ -610,8 +692,10 @@ int pw_capture_start(
     struct start_args st_args = { sess_data.session_path, htok3 };
     if (portal_call(bus, "Start",
                     add_start_args, &st_args,
-                    hpath3, 120000 /* 2 min for user */, parse_start, &start_data) < 0) {
+                    hpath3, 120000 /* 2 min for user */, stop_flag,
+                    parse_start, &start_data) < 0) {
         snprintf(err_buf, err_len, "Start failed (user cancelled?)");
+        close_portal_session(bus, sess_data.session_path);
         dbus_connection_unref(bus);
         return -1;
     }
@@ -620,11 +704,10 @@ int pw_capture_start(
     int pw_fd = open_pw_remote(bus, sess_data.session_path);
     if (pw_fd < 0) {
         snprintf(err_buf, err_len, "OpenPipeWireRemote failed");
+        close_portal_session(bus, sess_data.session_path);
         dbus_connection_unref(bus);
         return -1;
     }
-
-    dbus_connection_unref(bus);
 
     /* ── PipeWire stream ───────────────────────────────────────────── */
     struct pw_ctx ctx = {
@@ -635,6 +718,11 @@ int pw_capture_start(
 
     int ret = run_pw_stream(pw_fd, start_data.node_id, &ctx);
     close(pw_fd);
+
+    /* Runs on every exit from here on, including a clean stop: the session
+     * this whole call negotiated must not outlive the capture. */
+    close_portal_session(bus, sess_data.session_path);
+    dbus_connection_unref(bus);
 
     if (ret < 0) {
         snprintf(err_buf, err_len, "PipeWire stream error");
