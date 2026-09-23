@@ -1,12 +1,11 @@
 /// Frame processing profiler - показує що саме займає час
 /// Детальний breakdown кожної операції в pipeline
-
 use screen_streamer::config::Config;
 use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
-use std::time::Instant;
 use std::sync::Arc;
+use std::time::Instant;
 
 fn generate_test_frame(width: u32, height: u32, frame_num: usize, change_pct: f32) -> Vec<u8> {
     let mut rgba = vec![100u8; (width * height * 4) as usize];
@@ -118,15 +117,14 @@ impl FrameProfiler {
                 // original-grid index from the merged tile's own geometry
                 // instead (same shared Tile::representative_index stream.rs
                 // uses for the real path, instead of a hand-copied formula).
-                let tile_idx = tile.representative_index(self.tile_width, self.tile_height, self.config.tiles_x);
-                let metadata = self.diff_detector.get_metadata(tile_idx);
-                let priority = calculate_priority(
-                    tile,
-                    metadata,
-                    self.width,
-                    self.height,
-                    &self.config
+                let tile_idx = tile.representative_index(
+                    self.tile_width,
+                    self.tile_height,
+                    self.config.tiles_x,
                 );
+                let metadata = self.diff_detector.get_metadata(tile_idx);
+                let priority =
+                    calculate_priority(tile, metadata, self.width, self.height, &self.config);
                 (*tile, tile_idx, priority)
             })
             .collect();
@@ -138,11 +136,13 @@ impl FrameProfiler {
         timing.sorting_us = t3.elapsed().as_secs_f64() * 1_000_000.0;
 
         let sorted_tiles: Vec<_> = tiles_with_data.iter().map(|(t, _, _)| *t).collect();
-        let sorted_tile_indices: Vec<usize> = tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
+        let sorted_tile_indices: Vec<usize> =
+            tiles_with_data.iter().map(|(_, idx, _)| *idx).collect();
 
         // 5. Hash Collection - КРИТИЧНО: хешуємо MERGED tiles, не оригінальні
         let t4 = Instant::now();
-        let tile_hashes: Vec<u64> = sorted_tiles.iter()
+        let tile_hashes: Vec<u64> = sorted_tiles
+            .iter()
             .map(|tile| {
                 // Хешуємо merged tile з поточного фрейму
                 screen_streamer::tile::hash_tile(
@@ -151,7 +151,7 @@ impl FrameProfiler {
                     tile.y,
                     tile.width,
                     tile.height,
-                    self.width
+                    self.width,
                 )
             })
             .collect();
@@ -166,11 +166,17 @@ impl FrameProfiler {
         // there as valid for the whole merged region would serve stale bytes
         // for the other cells it covers.
         let t5 = Instant::now();
-        let cached_data: Vec<Option<Vec<u8>>> = sorted_tiles.iter()
+        let cached_data: Vec<Option<Vec<u8>>> = sorted_tiles
+            .iter()
             .zip(sorted_tile_indices.iter())
             .zip(tile_hashes.iter())
             .map(|((tile, &tile_idx), &merged_hash)| {
-                if !tile.is_single_cell(self.tile_width, self.tile_height, self.config.tiles_x, self.tiles_y) {
+                if !tile.is_single_cell(
+                    self.tile_width,
+                    self.tile_height,
+                    self.config.tiles_x,
+                    self.tiles_y,
+                ) {
                     return None;
                 }
                 let metadata = self.diff_detector.get_metadata(tile_idx);
@@ -231,7 +237,8 @@ impl FrameProfiler {
                     quality: tile.quality,
                     ..Default::default()
                 },
-            ).unwrap_or_else(|e| {
+            )
+            .unwrap_or_else(|e| {
                 eprintln!("WebP encoding error: {:?}", e);
                 Vec::new()
             });
@@ -249,7 +256,12 @@ impl FrameProfiler {
             if encoded[i].is_empty() {
                 continue;
             }
-            if !sorted_tiles[i].is_single_cell(self.tile_width, self.tile_height, self.config.tiles_x, self.tiles_y) {
+            if !sorted_tiles[i].is_single_cell(
+                self.tile_width,
+                self.tile_height,
+                self.config.tiles_x,
+                self.tiles_y,
+            ) {
                 continue;
             }
             if let Some(&tile_idx) = sorted_tile_indices.get(i) {
@@ -292,7 +304,10 @@ impl TimingBreakdown {
         let total_ms = self.total_us / 1000.0;
 
         println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!("Frame #{} - Timing Breakdown ({:.2} ms total)", frame_num, total_ms);
+        println!(
+            "Frame #{} - Timing Breakdown ({:.2} ms total)",
+            frame_num, total_ms
+        );
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
         self.print_line("1. Diff Detection", self.diff_detection_us);
@@ -307,10 +322,15 @@ impl TimingBreakdown {
 
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!("Stats:");
-        println!("  Tiles detected:  {} → {} after merge", self.tiles_detected, self.tiles_merged);
-        println!("  Cache hits:      {} ({:.1}%)",
+        println!(
+            "  Tiles detected:  {} → {} after merge",
+            self.tiles_detected, self.tiles_merged
+        );
+        println!(
+            "  Cache hits:      {} ({:.1}%)",
             self.cache_hits,
-            (self.cache_hits as f64 / self.tiles_merged.max(1) as f64) * 100.0);
+            (self.cache_hits as f64 / self.tiles_merged.max(1) as f64) * 100.0
+        );
         println!("  Tiles encoded:   {}", self.tiles_encoded);
     }
 
@@ -336,7 +356,10 @@ fn main() {
     println!("  Resolution: {}x{}", width, height);
     println!("  Tiles: {}x?", config.tiles_x);
     println!("  Merge gap: {}", config.merge_gap);
-    println!("  WebP quality: {:.1} - {:.1}", config.webp_quality_low, config.webp_quality_high);
+    println!(
+        "  WebP quality: {:.1} - {:.1}",
+        config.webp_quality_low, config.webp_quality_high
+    );
 
     let mut profiler = FrameProfiler::new(config, width, height);
 

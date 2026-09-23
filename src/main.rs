@@ -25,7 +25,9 @@ fn load_tls_acceptor(
     cert_path: Option<&str>,
     key_path: Option<&str>,
 ) -> std::result::Result<Option<TlsAcceptor>, String> {
-    let Some(cert_path) = cert_path else { return Ok(None) };
+    let Some(cert_path) = cert_path else {
+        return Ok(None);
+    };
     let key_path = key_path
         .ok_or_else(|| "RING2ZERO_TLS_CERT is set but RING2ZERO_TLS_KEY is not".to_string())?;
 
@@ -99,7 +101,10 @@ fn banner_text() -> String {
             out.push('\n');
         }
     }
-    let subtitle = format!("  Wayland screen streamer over WebRTC · v{}", env!("CARGO_PKG_VERSION"));
+    let subtitle = format!(
+        "  Wayland screen streamer over WebRTC · v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     if color {
         out.push_str(&format!("{COLOR}{subtitle}\x1b[0m\n"));
     } else {
@@ -186,7 +191,10 @@ fn print_paged(text: &str) {
             let program = parts.next().unwrap_or_else(|| "less".to_string());
             (program, parts.collect())
         }
-        _ => ("less".to_string(), vec!["-R".to_string(), "-F".to_string(), "-X".to_string()]),
+        _ => (
+            "less".to_string(),
+            vec!["-R".to_string(), "-F".to_string(), "-X".to_string()],
+        ),
     };
 
     let child = std::process::Command::new(&program)
@@ -225,8 +233,13 @@ async fn main() -> Result<()> {
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
     // checks, mDNS query results) when troubleshooting a connection.
     let debug = args.iter().any(|a| a == "--debug");
-    let default_filter = if debug { "warn,screen_streamer=debug" } else { "warn,screen_streamer=info" };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter)).init();
+    let default_filter = if debug {
+        "warn,screen_streamer=debug"
+    } else {
+        "warn,screen_streamer=info"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+        .init();
 
     // Auto-detect optimal config based on CPU performance
     let mut config = if args.iter().any(|a| a == "--no-adaptive") {
@@ -256,7 +269,10 @@ async fn main() -> Result<()> {
     let addr = format!("0.0.0.0:{}", config.ws_port);
     let listener = TcpListener::bind(&addr).await?;
 
-    let tls_acceptor = match load_tls_acceptor(config.tls_cert_path.as_deref(), config.tls_key_path.as_deref()) {
+    let tls_acceptor = match load_tls_acceptor(
+        config.tls_cert_path.as_deref(),
+        config.tls_key_path.as_deref(),
+    ) {
         Ok(acceptor) => acceptor,
         Err(e) => {
             eprintln!("TLS setup failed: {e}");
@@ -264,7 +280,11 @@ async fn main() -> Result<()> {
         }
     };
     let ws_scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
-    let http_scheme = if tls_acceptor.is_some() { "https" } else { "http" };
+    let http_scheme = if tls_acceptor.is_some() {
+        "https"
+    } else {
+        "http"
+    };
 
     println!("WebRTC signaling server (WebSocket): {ws_scheme}://{addr}");
     if tls_acceptor.is_none() {
@@ -280,7 +300,11 @@ async fn main() -> Result<()> {
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());
     if !config.ice_servers.is_empty() {
-        let urls: Vec<&str> = config.ice_servers.iter().flat_map(|s| s.urls.iter().map(String::as_str)).collect();
+        let urls: Vec<&str> = config
+            .ice_servers
+            .iter()
+            .flat_map(|s| s.urls.iter().map(String::as_str))
+            .collect();
         println!("ICE servers: {}", urls.join(", "));
     }
     if config.control {

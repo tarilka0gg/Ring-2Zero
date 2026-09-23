@@ -1,4 +1,3 @@
-
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 #[cfg(not(target_arch = "x86_64"))]
@@ -63,11 +62,18 @@ pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_wid
     })
 }
 
-pub fn hash_tile_half(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_width: u32) -> u64 {
+pub fn hash_tile_half(
+    rgba: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    frame_width: u32,
+) -> u64 {
     // Optimization #4: Bulk hashing для half hash
     HASH_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
-        let rows = (height + 1) / 2;
+        let rows = height.div_ceil(2);
         let tile_size = (width * rows * 4) as usize;
 
         if buf.len() < tile_size {
@@ -100,7 +106,7 @@ fn hash_contiguous(data: &[u8]) -> u64 {
             return unsafe { hash_avx2(data) };
         }
         // SSE2 fallback (always available on x86_64)
-        return unsafe { hash_sse2(data) };
+        unsafe { hash_sse2(data) }
     }
 
     // Non-x86_64 architectures (ARM, RISC-V, etc.)
@@ -262,10 +268,7 @@ pub mod simd_batch {
     /// Compare two arrays of u64 hashes and return indices where they differ
     /// Uses AVX2 to compare 4 hashes at once
     #[target_feature(enable = "avx2")]
-    pub unsafe fn find_changed_tiles_avx2(
-        prev: &[u64],
-        new: &[u64],
-    ) -> Vec<usize> {
+    pub unsafe fn find_changed_tiles_avx2(prev: &[u64], new: &[u64]) -> Vec<usize> {
         assert_eq!(prev.len(), new.len());
         let mut changed = Vec::new();
 
@@ -387,7 +390,13 @@ pub struct Tile {
 
 impl Tile {
     pub fn new(x: u32, y: u32, width: u32, height: u32, quality: f32) -> Self {
-        Self { x, y, width, height, quality }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            quality,
+        }
     }
 
     pub fn distance_from_center(&self, center_x: u32, center_y: u32) -> i32 {
@@ -404,7 +413,13 @@ impl Tile {
     /// this math — it used to be hand-copied independently in stream.rs and
     /// frame_profiler.rs, which is exactly how the post-merge indexing bugs
     /// fixed in v0.299.1 happened.
-    pub fn grid_bounds(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> (u32, u32, u32, u32) {
+    pub fn grid_bounds(
+        &self,
+        tile_width: u32,
+        tile_height: u32,
+        tiles_x: u32,
+        tiles_y: u32,
+    ) -> (u32, u32, u32, u32) {
         let start_tx = self.x / tile_width;
         let start_ty = self.y / tile_height;
         let end_tx = ((self.x + self.width - 1) / tile_width).min(tiles_x - 1);
@@ -425,14 +440,26 @@ impl Tile {
     /// Whether this tile covers exactly one grid cell (i.e. wasn't merged
     /// with neighbors). Only single-cell tiles can be safely cached/recovered
     /// by their representative index alone.
-    pub fn is_single_cell(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> bool {
+    pub fn is_single_cell(
+        &self,
+        tile_width: u32,
+        tile_height: u32,
+        tiles_x: u32,
+        tiles_y: u32,
+    ) -> bool {
         let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
         stx == etx && sty == ety
     }
 
     /// Every grid-cell index this tile covers (one entry for a single-cell
     /// tile, up to `MAX_MERGE_TILES_X * MAX_MERGE_TILES_Y` for a merged one).
-    pub fn covered_indices(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> Vec<usize> {
+    pub fn covered_indices(
+        &self,
+        tile_width: u32,
+        tile_height: u32,
+        tiles_x: u32,
+        tiles_y: u32,
+    ) -> Vec<usize> {
         let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
         let mut indices = Vec::with_capacity(((etx - stx + 1) * (ety - sty + 1)) as usize);
         for ty in sty..=ety {
@@ -447,8 +474,8 @@ impl Tile {
 // Circular buffer для change history (замість VecDeque для кращої performance)
 #[derive(Clone, Debug)]
 pub struct CircularBuffer {
-    data: u64,  // Bitfield для 64 frames історії (true/false = 1/0 bit)
-    size: u8,   // Поточна кількість елементів
+    data: u64,    // Bitfield для 64 frames історії (true/false = 1/0 bit)
+    size: u8,     // Поточна кількість елементів
     capacity: u8, // Максимальна місткість (обмежена 64)
 }
 
@@ -501,17 +528,17 @@ impl CircularBuffer {
 
 impl Default for CircularBuffer {
     fn default() -> Self {
-        Self::new(32)  // Default history window
+        Self::new(32) // Default history window
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TileMetadata {
     pub unchanged_frames: u32,
     pub last_sent_frame: u64,
     pub is_dynamic: bool,
     pub last_sent_as_dynamic: bool,
-    pub change_history: CircularBuffer,  // Замінили VecDeque на CircularBuffer
+    pub change_history: CircularBuffer, // Замінили VecDeque на CircularBuffer
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 
@@ -525,22 +552,6 @@ impl TileMetadata {
     pub fn update_frequency(&self) -> f32 {
         let changes = self.change_history.count_ones();
         changes as f32 / self.change_history.len().max(1) as f32
-    }
-}
-
-impl Default for TileMetadata {
-    fn default() -> Self {
-        Self {
-            unchanged_frames: 0,
-            last_sent_frame: 0,
-            is_dynamic: false,
-            last_sent_as_dynamic: false,
-            change_history: CircularBuffer::default(),
-            last_hash_diff: 0,
-            prev_half_hash: 0,
-            cached_encoded: None,
-            cached_hash: 0,
-        }
     }
 }
 

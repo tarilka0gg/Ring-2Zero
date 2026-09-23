@@ -1,14 +1,14 @@
 // WebRTC Signaling Module
 // Handles WebSocket-based signaling for WebRTC connection establishment
 
-use crate::error::{Result, Error};
-use tokio_tungstenite::tungstenite::Message;
-use tokio::sync::mpsc;
+use crate::error::{Error, Result};
 use futures_util::StreamExt;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
 
 pub struct SignalingChannel {
     ws_tx: mpsc::Sender<Message>,
@@ -26,13 +26,19 @@ impl SignalingChannel {
     /// Send offer through WebSocket, then start forwarding ICE candidates.
     /// `session` tags this negotiation attempt so late-arriving answer/candidate
     /// messages from an abandoned attempt can be told apart from the current one.
-    pub async fn send_offer_and_start_forwarding(mut self, sdp: String, session: u64) -> Result<()> {
+    pub async fn send_offer_and_start_forwarding(
+        mut self,
+        sdp: String,
+        session: u64,
+    ) -> Result<()> {
         let offer_json = serde_json::json!({
             "type": "offer",
             "sdp": sdp,
             "session": session
         });
-        self.ws_tx.send(Message::Text(offer_json.to_string())).await
+        self.ws_tx
+            .send(Message::Text(offer_json.to_string()))
+            .await
             .map_err(|_| Error::WebRTC("Failed to send offer (channel full or closed)".into()))?;
 
         // Start ICE forwarding in background
@@ -50,7 +56,12 @@ impl SignalingChannel {
                     "candidate": candidate_str,
                     "session": session
                 });
-                if self.ws_tx.send(Message::Text(candidate_json.to_string())).await.is_err() {
+                if self
+                    .ws_tx
+                    .send(Message::Text(candidate_json.to_string()))
+                    .await
+                    .is_err()
+                {
                     eprintln!("Failed to send ICE candidate (channel full or closed)");
                     break;
                 }
@@ -89,7 +100,8 @@ where
     // rejects them with "remote description is not set". Buffer any
     // candidate that arrives before the answer, then apply them all once the
     // remote description is actually set.
-    let mut pending_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit> = Vec::new();
+    let mut pending_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit> =
+        Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         tokio::select! {

@@ -1,15 +1,16 @@
 // HTTP/WebSocket Server Module
 // Handles incoming connections and dispatches to WebRTC/WebSocket handlers
 
-use crate::error::{Result, Error};
-use crate::config::Config;
-use crate::webrtc_connection::WebRTCConnection;
-use crate::signaling::{SignalingChannel, wait_for_answer};
-use crate::capture::ScreenCapture;
-use crate::stream;
 use crate::auth::{self, AuthOutcome};
+use crate::capture::ScreenCapture;
+use crate::config::Config;
+use crate::error::{Error, Result};
 use crate::input;
+use crate::signaling::{wait_for_answer, SignalingChannel};
+use crate::stream;
+use crate::webrtc_connection::WebRTCConnection;
 
+use futures_util::{SinkExt, StreamExt};
 use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -22,7 +23,6 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
-use futures_util::{SinkExt, StreamExt};
 
 /// The browser client, baked into the binary so `ring-2zero` is a single
 /// self-contained executable — no separate static file server, no path to
@@ -48,7 +48,9 @@ pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<
     } else if request.starts_with("GET ") {
         serve_client_html(stream).await
     } else {
-        Err(Error::WebRTC("Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into()))
+        Err(Error::WebRTC(
+            "Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into(),
+        ))
     }
 }
 
@@ -58,11 +60,16 @@ pub async fn handle_connection(tcp_stream: TcpStream, config: Config) -> Result<
 /// normalise headers send `upgrade: websocket`, which a case-sensitive check
 /// misrouted to the HTML page.
 fn is_websocket_upgrade(request: &str) -> bool {
-    request.lines().skip(1).take_while(|l| !l.is_empty()).any(|line| {
-        line.split_once(':').is_some_and(|(name, value)| {
-            name.trim().eq_ignore_ascii_case("upgrade") && value.trim().eq_ignore_ascii_case("websocket")
+    request
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.is_empty())
+        .any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("upgrade")
+                    && value.trim().eq_ignore_ascii_case("websocket")
+            })
         })
-    })
 }
 
 /// Handle an already-TLS-terminated connection (see `main.rs`'s TLS acceptor).
@@ -88,7 +95,9 @@ where
     } else if request.starts_with("GET ") {
         serve_client_html(stream).await
     } else {
-        Err(Error::WebRTC("Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into()))
+        Err(Error::WebRTC(
+            "Unrecognized connection (not a WebSocket upgrade or HTTP GET)".into(),
+        ))
     }
 }
 
@@ -117,12 +126,20 @@ struct PrefixedStream<S> {
 
 impl<S> PrefixedStream<S> {
     fn new(prefix: Vec<u8>, inner: S) -> Self {
-        Self { prefix, prefix_pos: 0, inner }
+        Self {
+            prefix,
+            prefix_pos: 0,
+            inner,
+        }
     }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         if self.prefix_pos < self.prefix.len() {
             let remaining = &self.prefix[self.prefix_pos..];
             let n = remaining.len().min(buf.remaining());
@@ -135,13 +152,20 @@ impl<S: AsyncRead + Unpin> AsyncRead for PrefixedStream<S> {
 }
 
 impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
@@ -173,13 +197,18 @@ where
         AuthOutcome::Rejected => {
             log::warn!("Rejected a client with a wrong token");
             tokio::time::sleep(auth::FAILURE_DELAY).await;
-            let close = CloseFrame { code: CloseCode::from(auth::CLOSE_UNAUTHORIZED), reason: "unauthorized".into() };
+            let close = CloseFrame {
+                code: CloseCode::from(auth::CLOSE_UNAUTHORIZED),
+                reason: "unauthorized".into(),
+            };
             let _ = ws_sender.send(Message::Close(Some(close))).await;
             return Ok(());
         }
         AuthOutcome::Gone => return Ok(()),
     }
-    ws_sender.send(Message::Text(hello_message(&config))).await
+    ws_sender
+        .send(Message::Text(hello_message(&config)))
+        .await
         .map_err(|e| Error::WebRTC(format!("Failed to send hello: {e}")))?;
 
     let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel::<Message>(32);
@@ -207,16 +236,26 @@ where
 
         let (webrtc_conn, ice_channel) = match WebRTCConnection::new(&config).await {
             Ok(x) => x,
-            Err(e) => { eprintln!("WebRTC init failed: {e}"); break; }
+            Err(e) => {
+                eprintln!("WebRTC init failed: {e}");
+                break;
+            }
         };
 
         let offer_sdp = match webrtc_conn.create_offer().await {
             Ok(s) => s,
-            Err(e) => { eprintln!("create_offer failed: {e}"); break; }
+            Err(e) => {
+                eprintln!("create_offer failed: {e}");
+                break;
+            }
         };
 
         let signaling = SignalingChannel::new(ws_tx.clone(), ice_channel.ice_rx);
-        if signaling.send_offer_and_start_forwarding(offer_sdp, session).await.is_err() {
+        if signaling
+            .send_offer_and_start_forwarding(offer_sdp, session)
+            .await
+            .is_err()
+        {
             eprintln!("Failed to send offer — WebSocket likely closed");
             break;
         }
@@ -228,14 +267,20 @@ where
             Arc::clone(&webrtc_conn.peer_connection),
             30,
             session,
-        ).await.unwrap_or(false);
+        )
+        .await
+        .unwrap_or(false);
 
         if !answer_received {
             eprintln!("No answer received within timeout, closing");
             break;
         }
 
-        if !webrtc_conn.wait_data_channel_open(30).await.unwrap_or(false) {
+        if !webrtc_conn
+            .wait_data_channel_open(30)
+            .await
+            .unwrap_or(false)
+        {
             eprintln!("DataChannel failed to open, closing");
             break;
         }
@@ -248,7 +293,10 @@ where
         let capture_thread = std::thread::spawn(move || {
             let capture = match ScreenCapture::new(frame_tx, stop_capture) {
                 Ok(c) => c,
-                Err(e) => { eprintln!("Capture setup failed: {e}"); return; }
+                Err(e) => {
+                    eprintln!("Capture setup failed: {e}");
+                    return;
+                }
             };
             if let Err(e) = capture.run(frame_duration) {
                 eprintln!("Capture error: {e}");
@@ -257,7 +305,13 @@ where
 
         let input = webrtc_conn.input_channel.as_ref().map(input::attach);
 
-        match stream::run_session(config.clone(), Arc::clone(&webrtc_conn.data_channel), frame_rx).await {
+        match stream::run_session(
+            config.clone(),
+            Arc::clone(&webrtc_conn.data_channel),
+            frame_rx,
+        )
+        .await
+        {
             Ok(_) => println!("Stream ended normally, attempting reconnect..."),
             Err(e) => eprintln!("Stream error: {e}, attempting reconnect..."),
         }
@@ -272,7 +326,8 @@ where
         let join_result = tokio::time::timeout(
             tokio::time::Duration::from_secs(5),
             tokio::task::spawn_blocking(move || capture_thread.join()),
-        ).await;
+        )
+        .await;
         if join_result.is_err() {
             eprintln!("Capture thread did not stop within 5s, abandoning it");
         }
@@ -289,12 +344,23 @@ mod tests {
 
     #[test]
     fn websocket_upgrade_detection_is_case_insensitive() {
-        assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n\r\n"));
-        assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nupgrade: websocket\r\n\r\n"));
-        assert!(is_websocket_upgrade("GET / HTTP/1.1\r\nUPGRADE:  WebSocket \r\n\r\n"));
+        assert!(is_websocket_upgrade(
+            "GET / HTTP/1.1\r\nHost: h\r\nUpgrade: websocket\r\n\r\n"
+        ));
+        assert!(is_websocket_upgrade(
+            "GET / HTTP/1.1\r\nupgrade: websocket\r\n\r\n"
+        ));
+        assert!(is_websocket_upgrade(
+            "GET / HTTP/1.1\r\nUPGRADE:  WebSocket \r\n\r\n"
+        ));
         assert!(!is_websocket_upgrade("GET / HTTP/1.1\r\nHost: h\r\n\r\n"));
-        assert!(!is_websocket_upgrade("GET /Upgrade: websocket HTTP/1.1\r\n\r\n"), "request line isn't a header");
-        assert!(!is_websocket_upgrade("GET / HTTP/1.1\r\nX-Note: upgrade: websocket\r\n\r\n"));
+        assert!(
+            !is_websocket_upgrade("GET /Upgrade: websocket HTTP/1.1\r\n\r\n"),
+            "request line isn't a header"
+        );
+        assert!(!is_websocket_upgrade(
+            "GET / HTTP/1.1\r\nX-Note: upgrade: websocket\r\n\r\n"
+        ));
     }
 
     #[test]
@@ -342,7 +408,7 @@ mod tests {
         rx.read_to_end(&mut out).await.unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(text.contains(&format!("Content-Length: {}", CLIENT_HTML.as_bytes().len())));
+        assert!(text.contains(&format!("Content-Length: {}", CLIENT_HTML.len())));
         assert!(text.ends_with(CLIENT_HTML));
     }
 }

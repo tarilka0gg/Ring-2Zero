@@ -37,7 +37,11 @@ fn parse_one(entry: &str) -> Result<IceServer, String> {
             if rest.is_empty() || rest.contains('@') {
                 return Err(format!("ICE server `{entry}`: expected stun:host[:port]"));
             }
-            Ok(IceServer { urls: vec![entry.to_owned()], username: String::new(), credential: String::new() })
+            Ok(IceServer {
+                urls: vec![entry.to_owned()],
+                username: String::new(),
+                credential: String::new(),
+            })
         }
         "turn" | "turns" => {
             let (creds, host) = rest
@@ -46,19 +50,31 @@ fn parse_one(entry: &str) -> Result<IceServer, String> {
             let (user, pass) = creds
                 .split_once(':')
                 .filter(|(u, p)| !u.is_empty() && !p.is_empty())
-                .ok_or_else(|| format!("ICE server `{scheme}:…@{host}`: TURN needs user:pass@host"))?;
+                .ok_or_else(|| {
+                    format!("ICE server `{scheme}:…@{host}`: TURN needs user:pass@host")
+                })?;
             if host.is_empty() {
                 return Err(format!("ICE server `{scheme}:…`: missing host"));
             }
-            Ok(IceServer { urls: vec![format!("{scheme}:{host}")], username: user.to_owned(), credential: pass.to_owned() })
+            Ok(IceServer {
+                urls: vec![format!("{scheme}:{host}")],
+                username: user.to_owned(),
+                credential: pass.to_owned(),
+            })
         }
-        _ => Err(format!("ICE server `{entry}`: unknown scheme `{scheme}` (stun:, turn: or turns:)")),
+        _ => Err(format!(
+            "ICE server `{entry}`: unknown scheme `{scheme}` (stun:, turn: or turns:)"
+        )),
     }
 }
 
 impl From<&IceServer> for webrtc::ice_transport::ice_server::RTCIceServer {
     fn from(s: &IceServer) -> Self {
-        Self { urls: s.urls.clone(), username: s.username.clone(), credential: s.credential.clone() }
+        Self {
+            urls: s.urls.clone(),
+            username: s.username.clone(),
+            credential: s.credential.clone(),
+        }
     }
 }
 
@@ -74,7 +90,10 @@ mod tests {
 
     #[test]
     fn stun_and_turn_entries() {
-        let v = parse_ice_servers("stun:stun.l.google.com:19302, turn:alice:s3cr:et@turn.example.org:3478?transport=tcp").unwrap();
+        let v = parse_ice_servers(
+            "stun:stun.l.google.com:19302, turn:alice:s3cr:et@turn.example.org:3478?transport=tcp",
+        )
+        .unwrap();
         assert_eq!(v[0].urls, ["stun:stun.l.google.com:19302"]);
         assert!(v[0].username.is_empty());
         assert_eq!(v[1].urls, ["turn:turn.example.org:3478?transport=tcp"]);
@@ -85,12 +104,23 @@ mod tests {
     #[test]
     fn password_may_contain_at_sign() {
         let v = parse_ice_servers("turns:bob:p@ss@relay.example.org").unwrap();
-        assert_eq!((v[0].credential.as_str(), v[0].urls[0].as_str()), ("p@ss", "turns:relay.example.org"));
+        assert_eq!(
+            (v[0].credential.as_str(), v[0].urls[0].as_str()),
+            ("p@ss", "turns:relay.example.org")
+        );
     }
 
     #[test]
     fn bad_entries_are_rejected_without_leaking_credentials() {
-        for bad in ["stun.example.org", "http:x", "stun:", "turn:host", "turn::pw@host", "turn:user:@host", "turn:u:p@"] {
+        for bad in [
+            "stun.example.org",
+            "http:x",
+            "stun:",
+            "turn:host",
+            "turn::pw@host",
+            "turn:user:@host",
+            "turn:u:p@",
+        ] {
             assert!(parse_ice_servers(bad).is_err(), "{bad}");
         }
         let err = parse_ice_servers("turn:user:hunter2@").unwrap_err();

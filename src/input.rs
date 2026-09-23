@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum};
-use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1};
-use wayland_protocols_wlr::virtual_pointer::v1::client::{zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1,
+};
+use wayland_protocols_wlr::virtual_pointer::v1::client::{
+    zwlr_virtual_pointer_manager_v1, zwlr_virtual_pointer_v1,
+};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 
@@ -76,7 +80,11 @@ impl HeldState {
             return KeyAction::Drop;
         }
         let before = (self.depressed(), self.locked);
-        let changed = if pressed { self.keys.insert(code) } else { self.keys.remove(&code) };
+        let changed = if pressed {
+            self.keys.insert(code)
+        } else {
+            self.keys.remove(&code)
+        };
         if !changed {
             return KeyAction::Drop;
         }
@@ -93,12 +101,19 @@ impl HeldState {
 
     /// False if redundant (press of a held button, release of an unheld one).
     pub fn button(&mut self, code: u32, pressed: bool) -> bool {
-        if pressed { self.buttons.insert(code) } else { self.buttons.remove(&code) }
+        if pressed {
+            self.buttons.insert(code)
+        } else {
+            self.buttons.remove(&code)
+        }
     }
 
     /// Drains everything still held: (keys, buttons). Locks are kept.
     pub fn release_all(&mut self) -> (Vec<u16>, Vec<u32>) {
-        (std::mem::take(&mut self.keys).into_iter().collect(), std::mem::take(&mut self.buttons).into_iter().collect())
+        (
+            std::mem::take(&mut self.keys).into_iter().collect(),
+            std::mem::take(&mut self.buttons).into_iter().collect(),
+        )
     }
 
     /// A modifier bit is set while ANY key mapping to it is held.
@@ -120,7 +135,11 @@ pub fn wheel_to_axis(px: i16) -> f64 {
 /// Discrete wheel steps (~100 px each), at least ±1 for any non-zero delta.
 pub fn wheel_to_discrete(px: i16) -> i32 {
     let steps = (f64::from(px) / 100.0).round() as i32;
-    if steps == 0 { i32::from(px.signum()) } else { steps }
+    if steps == 0 {
+        i32::from(px.signum())
+    } else {
+        steps
+    }
 }
 
 // ─── Layer 2: Wayland injector ─────────────────────────────────────────────
@@ -133,7 +152,10 @@ struct Globals {
     seat: Option<wl_seat::WlSeat>,
     has_keyboard: bool,
     output: Option<wl_output::WlOutput>,
-    pointer_manager: Option<(zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1, u32)>,
+    pointer_manager: Option<(
+        zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
+        u32,
+    )>,
     keyboard_manager: Option<zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1>,
     keymap: Option<(u32, OwnedFd, u32)>,
 }
@@ -167,17 +189,21 @@ impl Injector {
         queue.roundtrip(&mut g).map_err(wl_err)?; // globals
         queue.roundtrip(&mut g).map_err(wl_err)?; // seat capabilities
 
-        let seat = g.seat.clone().ok_or_else(|| Error::Wayland("compositor lacks wl_seat".into()))?;
-        let output = g.output.clone().ok_or(Error::NoOutput)?;
-        let (pm, pm_version) = g
-            .pointer_manager
+        let seat = g
+            .seat
             .clone()
-            .ok_or_else(|| Error::Wayland("compositor lacks zwlr_virtual_pointer_manager_v1".into()))?;
+            .ok_or_else(|| Error::Wayland("compositor lacks wl_seat".into()))?;
+        let output = g.output.clone().ok_or(Error::NoOutput)?;
+        let (pm, pm_version) = g.pointer_manager.clone().ok_or_else(|| {
+            Error::Wayland("compositor lacks zwlr_virtual_pointer_manager_v1".into())
+        })?;
 
         let pointer = if pm_version >= 2 {
             pm.create_virtual_pointer_with_output(Some(&seat), Some(&output), &qh, ())
         } else {
-            log::warn!("zwlr_virtual_pointer_manager_v1 v1: pointer not bound to the streamed output");
+            log::warn!(
+                "zwlr_virtual_pointer_manager_v1 v1: pointer not bound to the streamed output"
+            );
             pm.create_virtual_pointer(Some(&seat), &qh, ())
         };
 
@@ -201,7 +227,9 @@ impl Injector {
                 }
             }
             (None, _) => {
-                log::warn!("Compositor lacks zwp_virtual_keyboard_manager_v1, keyboard control disabled");
+                log::warn!(
+                    "Compositor lacks zwp_virtual_keyboard_manager_v1, keyboard control disabled"
+                );
                 None
             }
             (Some(_), false) => {
@@ -211,7 +239,14 @@ impl Injector {
         };
         conn.flush().map_err(wl_err)?;
 
-        Ok(Self { conn, _queue: queue, pointer, keyboard, held: HeldState::default(), start: Instant::now() })
+        Ok(Self {
+            conn,
+            _queue: queue,
+            pointer,
+            keyboard,
+            held: HeldState::default(),
+            start: Instant::now(),
+        })
     }
 
     fn now(&self) -> u32 {
@@ -222,28 +257,43 @@ impl Injector {
         let t = self.now();
         match event {
             InputEvent::PointerMotion { x, y } => {
-                self.pointer.motion_absolute(t, x.into(), y.into(), MOTION_EXTENT, MOTION_EXTENT);
+                self.pointer
+                    .motion_absolute(t, x.into(), y.into(), MOTION_EXTENT, MOTION_EXTENT);
                 self.pointer.frame();
             }
             InputEvent::PointerButton { button, pressed } => {
                 let code = button.evdev_code();
                 if self.held.button(code, pressed) {
-                    let state = if pressed { wl_pointer::ButtonState::Pressed } else { wl_pointer::ButtonState::Released };
+                    let state = if pressed {
+                        wl_pointer::ButtonState::Pressed
+                    } else {
+                        wl_pointer::ButtonState::Released
+                    };
                     self.pointer.button(t, code, state);
                     self.pointer.frame();
                 }
             }
             InputEvent::PointerAxis { dx, dy } => {
                 self.pointer.axis_source(wl_pointer::AxisSource::Wheel);
-                for (delta, axis) in [(dy, wl_pointer::Axis::VerticalScroll), (dx, wl_pointer::Axis::HorizontalScroll)] {
+                for (delta, axis) in [
+                    (dy, wl_pointer::Axis::VerticalScroll),
+                    (dx, wl_pointer::Axis::HorizontalScroll),
+                ] {
                     if delta != 0 {
-                        self.pointer.axis_discrete(t, axis, wheel_to_axis(delta), wheel_to_discrete(delta));
+                        self.pointer.axis_discrete(
+                            t,
+                            axis,
+                            wheel_to_axis(delta),
+                            wheel_to_discrete(delta),
+                        );
                     }
                 }
                 self.pointer.frame();
             }
             InputEvent::Key { code, pressed } => {
-                let Some(kb) = &self.keyboard else { return Ok(()) };
+                let Some(kb) = &self.keyboard else {
+                    return Ok(());
+                };
                 if let KeyAction::Forward(mods) = self.held.key(code, pressed) {
                     kb.key(t, code.into(), u32::from(pressed));
                     if let Some((depressed, locked)) = mods {
@@ -268,7 +318,8 @@ impl Injector {
             }
         }
         for code in &buttons {
-            self.pointer.button(t, *code, wl_pointer::ButtonState::Released);
+            self.pointer
+                .button(t, *code, wl_pointer::ButtonState::Released);
         }
         if !buttons.is_empty() {
             self.pointer.frame();
@@ -289,8 +340,22 @@ impl Drop for Injector {
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Globals {
-    fn event(g: &mut Self, reg: &wl_registry::WlRegistry, event: wl_registry::Event, _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        let wl_registry::Event::Global { name, interface, version } = event else { return };
+    fn event(
+        g: &mut Self,
+        reg: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        else {
+            return;
+        };
         match interface.as_str() {
             "wl_seat" if g.seat.is_none() => g.seat = Some(reg.bind(name, version.min(7), qh, ())),
             "wl_output" if g.output.is_none() => g.output = Some(reg.bind(name, 1, qh, ())),
@@ -298,22 +363,41 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Globals {
                 let v = version.min(2);
                 g.pointer_manager = Some((reg.bind(name, v, qh, ()), v));
             }
-            "zwp_virtual_keyboard_manager_v1" => g.keyboard_manager = Some(reg.bind(name, 1, qh, ())),
+            "zwp_virtual_keyboard_manager_v1" => {
+                g.keyboard_manager = Some(reg.bind(name, 1, qh, ()))
+            }
             _ => {}
         }
     }
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for Globals {
-    fn event(g: &mut Self, _: &wl_seat::WlSeat, event: wl_seat::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
-        if let wl_seat::Event::Capabilities { capabilities: WEnum::Value(caps) } = event {
+    fn event(
+        g: &mut Self,
+        _: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = event
+        {
             g.has_keyboard = caps.contains(wl_seat::Capability::Keyboard);
         }
     }
 }
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Globals {
-    fn event(g: &mut Self, _: &wl_keyboard::WlKeyboard, event: wl_keyboard::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        g: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         if let wl_keyboard::Event::Keymap { format, fd, size } = event {
             let format = match format {
                 WEnum::Value(f) => f as u32,
@@ -362,7 +446,10 @@ pub fn attach(channel: &Arc<RTCDataChannel>) -> InputSession {
         .name("r2z-input".into())
         .spawn(move || run_injector(rx))
         .expect("failed to spawn input thread");
-    InputSession { channel: Arc::clone(channel), thread }
+    InputSession {
+        channel: Arc::clone(channel),
+        thread,
+    }
 }
 
 fn run_injector(rx: mpsc::Receiver<InputEvent>) {
@@ -394,7 +481,10 @@ impl InputSession {
         // sender, which ends the injector thread's receive loop.
         self.channel.on_message(Box::new(|_| Box::pin(async {})));
         let join = tokio::task::spawn_blocking(move || self.thread.join());
-        if tokio::time::timeout(Duration::from_secs(2), join).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(2), join)
+            .await
+            .is_err()
+        {
             log::warn!("Input thread did not stop within 2s");
         }
     }
@@ -490,7 +580,10 @@ mod tests {
     #[ignore]
     fn injector_connects_to_the_running_compositor() {
         let injector = Injector::connect().expect("connect");
-        assert!(injector.keyboard.is_some(), "keyboard control should be available");
+        assert!(
+            injector.keyboard.is_some(),
+            "keyboard control should be available"
+        );
     }
 
     #[test]

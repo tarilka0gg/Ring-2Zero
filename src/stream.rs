@@ -29,7 +29,11 @@ use crate::transport::{self, AckTracker, LostCells, ACK_TIMEOUT};
 const ACK_POLL: Duration = Duration::from_millis(50);
 
 /// Streams `frame_rx` to `dc` until the channel closes or a send fails.
-pub async fn run_session(config: Config, dc: Arc<RTCDataChannel>, frame_rx: mpsc::Receiver<Frame>) -> Result<()> {
+pub async fn run_session(
+    config: Config,
+    dc: Arc<RTCDataChannel>,
+    frame_rx: mpsc::Receiver<Frame>,
+) -> Result<()> {
     log::info!("Client connected, streaming");
 
     let (ack_tx, mut ack_rx) = tokio::sync::mpsc::unbounded_channel::<u32>();
@@ -79,10 +83,19 @@ pub async fn run_session(config: Config, dc: Arc<RTCDataChannel>, frame_rx: mpsc
                 continue;
             }
             let queue_ms = frame.produced_at.elapsed().as_secs_f64() * 1000.0;
-            let seq = acks.register(frame.epoch, std::mem::take(&mut frame.ack_indices), Instant::now());
+            let seq = acks.register(
+                frame.epoch,
+                std::mem::take(&mut frame.ack_indices),
+                Instant::now(),
+            );
             let send_start = Instant::now();
             let bytes = transport::send_tiles(&dc, seq, &frame).await?;
-            stats.record(&frame, bytes, queue_ms, send_start.elapsed().as_secs_f64() * 1000.0);
+            stats.record(
+                &frame,
+                bytes,
+                queue_ms,
+                send_start.elapsed().as_secs_f64() * 1000.0,
+            );
         }
     }
     .await;
@@ -91,7 +104,12 @@ pub async fn run_session(config: Config, dc: Arc<RTCDataChannel>, frame_rx: mpsc
     // next iteration; join it off the async runtime, bounded, so a wedged
     // encoder can't stall this worker.
     drop(encoded_rx);
-    match tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(move || process_handle.join())).await {
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || process_handle.join()),
+    )
+    .await
+    {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(e))) => return Err(Error::WebRTC(format!("Processing thread panicked: {e:?}"))),
         Ok(Err(e)) => log::error!("Failed to join processing thread: {e}"),

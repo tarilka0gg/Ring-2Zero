@@ -4,8 +4,11 @@ use crate::error::{Error, Result};
 use crate::frame::Frame;
 use crate::shm::ShmBuffer;
 
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, FromRawFd};
-use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
 use std::time::Duration;
 
 use wayland_client::{
@@ -13,8 +16,8 @@ use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum,
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
-    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
     zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
+    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -37,7 +40,7 @@ mod gbm_ffi {
     pub enum GbmBo {}
 
     pub const GBM_BO_USE_RENDERING: u32 = 1 << 2;
-    pub const GBM_BO_USE_LINEAR:    u32 = 1 << 4;
+    pub const GBM_BO_USE_LINEAR: u32 = 1 << 4;
 
     #[link(name = "gbm")]
     extern "C" {
@@ -71,9 +74,15 @@ impl Drop for GbmDevice {
 
 impl GbmDevice {
     fn try_open(path: &str) -> Option<Self> {
-        let file = std::fs::OpenOptions::new().read(true).write(true).open(path).ok()?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .ok()?;
         let ptr = unsafe { gbm_ffi::gbm_create_device(file.as_raw_fd()) };
-        if ptr.is_null() { return None; }
+        if ptr.is_null() {
+            return None;
+        }
         Some(GbmDevice { ptr, _file: file })
     }
 }
@@ -93,10 +102,14 @@ struct WlrState {
 
 #[derive(Default)]
 struct FrameInfo {
-    shm_width: u32, shm_height: u32, shm_stride: u32,
+    shm_width: u32,
+    shm_height: u32,
+    shm_stride: u32,
     shm_format: Option<wl_shm::Format>,
     got_shm: bool,
-    dma_format: u32, dma_width: u32, dma_height: u32,
+    dma_format: u32,
+    dma_width: u32,
+    dma_height: u32,
     got_dma: bool,
     buffer_done: bool,
     ready: bool,
@@ -107,32 +120,51 @@ struct FrameInfo {
 impl WlrState {
     fn new() -> Self {
         Self {
-            shm: None, output: None, screencopy_manager: None,
-            linux_dmabuf: None, supported_dma: Vec::new(),
+            shm: None,
+            output: None,
+            screencopy_manager: None,
+            linux_dmabuf: None,
+            supported_dma: Vec::new(),
             frame_info: FrameInfo::default(),
         }
     }
 
     fn reset_frame(&mut self) {
         let fi = &mut self.frame_info;
-        fi.got_shm = false; fi.got_dma = false;
-        fi.buffer_done = false; fi.ready = false; fi.failed = false;
+        fi.got_shm = false;
+        fi.got_dma = false;
+        fi.buffer_done = false;
+        fi.ready = false;
+        fi.failed = false;
         fi.damage.clear();
     }
 
     fn has_linear(&self, format: u32) -> bool {
-        self.supported_dma.iter().any(|&(f, m)| f == format && m == 0)
+        self.supported_dma
+            .iter()
+            .any(|&(f, m)| f == format && m == 0)
     }
 }
 
 // ─── Dispatch impls ────────────────────────────────────────────────────────
 
 impl Dispatch<wl_registry::WlRegistry, ()> for WlrState {
-    fn event(state: &mut Self, reg: &wl_registry::WlRegistry, event: wl_registry::Event,
-             _: &(), _: &Connection, qh: &QueueHandle<Self>) {
-        if let wl_registry::Event::Global { name, interface, .. } = event {
+    fn event(
+        state: &mut Self,
+        reg: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_registry::Event::Global {
+            name, interface, ..
+        } = event
+        {
             match interface.as_str() {
-                "wl_shm" => { state.shm = Some(reg.bind(name, 1, qh, ())); }
+                "wl_shm" => {
+                    state.shm = Some(reg.bind(name, 1, qh, ()));
+                }
                 "wl_output" if state.output.is_none() => {
                     state.output = Some(reg.bind(name, 1, qh, ()));
                 }
@@ -149,30 +181,80 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlrState {
 }
 
 impl Dispatch<wl_shm::WlShm, ()> for WlrState {
-    fn event(_: &mut Self, _: &wl_shm::WlShm, _: wl_shm::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_shm::WlShm,
+        _: wl_shm::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 impl Dispatch<wl_shm_pool::WlShmPool, ()> for WlrState {
-    fn event(_: &mut Self, _: &wl_shm_pool::WlShmPool, _: wl_shm_pool::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_shm_pool::WlShmPool,
+        _: wl_shm_pool::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 impl Dispatch<wl_buffer::WlBuffer, ()> for WlrState {
-    fn event(_: &mut Self, _: &wl_buffer::WlBuffer, _: wl_buffer::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        _: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 impl Dispatch<wl_output::WlOutput, ()> for WlrState {
-    fn event(_: &mut Self, _: &wl_output::WlOutput, _: wl_output::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &wl_output::WlOutput,
+        _: wl_output::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 impl Dispatch<ZwlrScreencopyManagerV1, ()> for WlrState {
-    fn event(_: &mut Self, _: &ZwlrScreencopyManagerV1, _: zwlr_screencopy_manager_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &ZwlrScreencopyManagerV1,
+        _: zwlr_screencopy_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ZwpLinuxDmabufV1, ()> for WlrState {
-    fn event(state: &mut Self, _: &ZwpLinuxDmabufV1, event: zwp_linux_dmabuf_v1::Event,
-             _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZwpLinuxDmabufV1,
+        event: zwp_linux_dmabuf_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
             zwp_linux_dmabuf_v1::Event::Format { format } => {
                 // v1: format-only → LINEAR implicitly supported
                 state.supported_dma.push((format, 0));
             }
-            zwp_linux_dmabuf_v1::Event::Modifier { format, modifier_hi, modifier_lo } => {
+            zwp_linux_dmabuf_v1::Event::Modifier {
+                format,
+                modifier_hi,
+                modifier_lo,
+            } => {
                 let modifier = ((modifier_hi as u64) << 32) | modifier_lo as u64;
                 state.supported_dma.push((format, modifier));
             }
@@ -182,15 +264,33 @@ impl Dispatch<ZwpLinuxDmabufV1, ()> for WlrState {
 }
 
 impl Dispatch<ZwpLinuxBufferParamsV1, ()> for WlrState {
-    fn event(_: &mut Self, _: &ZwpLinuxBufferParamsV1, _: zwp_linux_buffer_params_v1::Event,
-             _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+    fn event(
+        _: &mut Self,
+        _: &ZwpLinuxBufferParamsV1,
+        _: zwp_linux_buffer_params_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
 }
 
 impl Dispatch<ZwlrScreencopyFrameV1, ()> for WlrState {
-    fn event(state: &mut Self, _: &ZwlrScreencopyFrameV1, event: zwlr_screencopy_frame_v1::Event,
-             _: &(), _: &Connection, _: &QueueHandle<Self>) {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrScreencopyFrameV1,
+        event: zwlr_screencopy_frame_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
         match event {
-            zwlr_screencopy_frame_v1::Event::Buffer { format, width, height, stride } => {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
                 if let WEnum::Value(fmt) = format {
                     state.frame_info.shm_format = Some(fmt);
                     state.frame_info.shm_width = width;
@@ -199,7 +299,11 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for WlrState {
                     state.frame_info.got_shm = true;
                 }
             }
-            zwlr_screencopy_frame_v1::Event::LinuxDmabuf { format, width, height } => {
+            zwlr_screencopy_frame_v1::Event::LinuxDmabuf {
+                format,
+                width,
+                height,
+            } => {
                 state.frame_info.dma_format = format;
                 state.frame_info.dma_width = width;
                 state.frame_info.dma_height = height;
@@ -208,10 +312,17 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for WlrState {
             zwlr_screencopy_frame_v1::Event::BufferDone => {
                 state.frame_info.buffer_done = true;
             }
-            zwlr_screencopy_frame_v1::Event::Damage { x, y, width, height } => {
+            zwlr_screencopy_frame_v1::Event::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
                 state.frame_info.damage.push(DamageRegion {
-                    x: x as u32, y: y as u32,
-                    width: width as u32, height: height as u32,
+                    x,
+                    y,
+                    width,
+                    height,
                 });
             }
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {
@@ -231,21 +342,40 @@ struct ShmCapBuf {
     shm_buf: ShmBuffer,
     _pool: wl_shm_pool::WlShmPool,
     wl_buf: wl_buffer::WlBuffer,
-    width: u32, height: u32,
+    width: u32,
+    height: u32,
 }
 
 impl ShmCapBuf {
-    fn new(shm: &wl_shm::WlShm, w: u32, h: u32, stride: u32,
-           fmt: wl_shm::Format, qh: &QueueHandle<WlrState>) -> Self {
+    fn new(
+        shm: &wl_shm::WlShm,
+        w: u32,
+        h: u32,
+        stride: u32,
+        fmt: wl_shm::Format,
+        qh: &QueueHandle<WlrState>,
+    ) -> Self {
         let size = (stride * h) as usize;
         let shm_buf = ShmBuffer::new(size).expect("ShmBuffer::new");
         let pool = shm.create_pool(shm_buf.fd().as_fd(), size as i32, qh, ());
         let wl_buf = pool.create_buffer(0, w as i32, h as i32, stride as i32, fmt, qh, ());
-        Self { shm_buf, _pool: pool, wl_buf, width: w, height: h }
+        Self {
+            shm_buf,
+            _pool: pool,
+            wl_buf,
+            width: w,
+            height: h,
+        }
     }
-    fn needs_resize(&self, w: u32, h: u32) -> bool { self.width != w || self.height != h }
-    fn buf(&self) -> &wl_buffer::WlBuffer { &self.wl_buf }
-    fn data(&self) -> &[u8] { self.shm_buf.as_slice() }
+    fn needs_resize(&self, w: u32, h: u32) -> bool {
+        self.width != w || self.height != h
+    }
+    fn buf(&self) -> &wl_buffer::WlBuffer {
+        &self.wl_buf
+    }
+    fn data(&self) -> &[u8] {
+        self.shm_buf.as_slice()
+    }
 }
 
 // ─── DMA-BUF buffer ────────────────────────────────────────────────────────
@@ -276,20 +406,30 @@ impl DmaBuf {
     fn try_new(
         gbm: &GbmDevice,
         linux_dmabuf: &ZwpLinuxDmabufV1,
-        width: u32, height: u32, drm_format: u32,
+        width: u32,
+        height: u32,
+        drm_format: u32,
         qh: &QueueHandle<WlrState>,
     ) -> Option<Self> {
         let bo_ptr = unsafe {
             gbm_ffi::gbm_bo_create(
-                gbm.ptr, width, height, drm_format,
+                gbm.ptr,
+                width,
+                height,
+                drm_format,
                 gbm_ffi::GBM_BO_USE_LINEAR | gbm_ffi::GBM_BO_USE_RENDERING,
             )
         };
-        if bo_ptr.is_null() { return None; }
+        if bo_ptr.is_null() {
+            return None;
+        }
 
         let stride = unsafe { gbm_ffi::gbm_bo_get_stride(bo_ptr) };
         let raw_fd = unsafe { gbm_ffi::gbm_bo_get_fd(bo_ptr) };
-        if raw_fd < 0 { unsafe { gbm_ffi::gbm_bo_destroy(bo_ptr) }; return None; }
+        if raw_fd < 0 {
+            unsafe { gbm_ffi::gbm_bo_destroy(bo_ptr) };
+            return None;
+        }
 
         // gbm_bo_get_fd() gives a new fd we own
         let dma_fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
@@ -297,9 +437,12 @@ impl DmaBuf {
 
         let ptr = unsafe {
             libc::mmap(
-                std::ptr::null_mut(), size,
-                libc::PROT_READ, libc::MAP_SHARED,
-                dma_fd.as_raw_fd(), 0,
+                std::ptr::null_mut(),
+                size,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
+                dma_fd.as_raw_fd(),
+                0,
             )
         };
         if ptr == libc::MAP_FAILED {
@@ -310,24 +453,35 @@ impl DmaBuf {
         let params = linux_dmabuf.create_params(qh, ());
         params.add(dma_fd.as_fd(), 0, 0, stride, 0, 0); // modifier = 0 = LINEAR
         let wl_buf = params.create_immed(
-            width as i32, height as i32, drm_format,
+            width as i32,
+            height as i32,
+            drm_format,
             zwp_linux_buffer_params_v1::Flags::empty(),
-            qh, (),
+            qh,
+            (),
         );
         // dma_fd drops here — mmap keeps the buffer alive
 
         Some(Self {
-            bo_ptr, wl_buf,
+            bo_ptr,
+            wl_buf,
             ptr: ptr as *const u8,
-            size, width, height, drm_format,
+            size,
+            width,
+            height,
+            drm_format,
         })
     }
 
     fn needs_resize(&self, w: u32, h: u32, fmt: u32) -> bool {
         self.width != w || self.height != h || self.drm_format != fmt
     }
-    fn buf(&self) -> &wl_buffer::WlBuffer { &self.wl_buf }
-    fn data(&self) -> &[u8] { unsafe { std::slice::from_raw_parts(self.ptr, self.size) } }
+    fn buf(&self) -> &wl_buffer::WlBuffer {
+        &self.wl_buf
+    }
+    fn data(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
+    }
 }
 
 // ─── Pixel format conversion ───────────────────────────────────────────────
@@ -344,7 +498,9 @@ fn to_rgba(data: &[u8], fmt: u32, w: u32, h: u32, dst: &mut Vec<u8>) {
         DRM_FORMAT_XBGR8888 => {
             dst.resize(data.len(), 0);
             dst.copy_from_slice(data);
-            for px in dst.chunks_exact_mut(4) { px[3] = 255; }
+            for px in dst.chunks_exact_mut(4) {
+                px[3] = 255;
+            }
         }
         _ => {
             convert_bgrx_to_rgba_inplace(data, w, h, dst);
@@ -379,21 +535,23 @@ pub struct WlrCapture {
 
 impl WlrCapture {
     pub fn probe() -> Result<ProbeResult> {
-        let conn = Connection::connect_to_env()
-            .map_err(|e| Error::Wayland(e.to_string()))?;
+        let conn = Connection::connect_to_env().map_err(|e| Error::Wayland(e.to_string()))?;
         let mut eq = conn.new_event_queue::<WlrState>();
         let qh = eq.handle();
         conn.display().get_registry(&qh, ());
         let mut state = WlrState::new();
-        eq.roundtrip(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
-        state.screencopy_manager.as_ref().ok_or(Error::NoScreencopyManager)?;
+        eq.roundtrip(&mut state)
+            .map_err(|e| Error::Wayland(e.to_string()))?;
+        state
+            .screencopy_manager
+            .as_ref()
+            .ok_or(Error::NoScreencopyManager)?;
         Ok(ProbeResult { conn })
     }
 
     pub fn new(probe: ProbeResult, tx: mpsc::SyncSender<Frame>, stop: Arc<AtomicBool>) -> Self {
         Self { probe, tx, stop }
     }
-
 }
 
 fn send_frame(tx: &mpsc::SyncSender<Frame>, frame: Frame) -> Result<()> {
@@ -410,11 +568,16 @@ fn wait_for_buffer_hint(
     state: &mut WlrState,
 ) -> Result<()> {
     loop {
-        eq.blocking_dispatch(state).map_err(|e| Error::Wayland(e.to_string()))?;
+        eq.blocking_dispatch(state)
+            .map_err(|e| Error::Wayland(e.to_string()))?;
         let fi = &state.frame_info;
-        if fi.failed || fi.buffer_done { break; }
+        if fi.failed || fi.buffer_done {
+            break;
+        }
         // v1/v2 fallback: no buffer_done, just Buffer event
-        if fi.got_shm && state.linux_dmabuf.is_none() { break; }
+        if fi.got_shm && state.linux_dmabuf.is_none() {
+            break;
+        }
     }
     Ok(())
 }
@@ -427,17 +590,29 @@ impl CaptureBackend for WlrCapture {
         let qh = eq.handle();
         conn.display().get_registry(&qh, ());
         let mut state = WlrState::new();
-        eq.roundtrip(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
+        eq.roundtrip(&mut state)
+            .map_err(|e| Error::Wayland(e.to_string()))?;
         // Second roundtrip to collect DMA-BUF format/modifier events
         if state.linux_dmabuf.is_some() {
-            eq.roundtrip(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
+            eq.roundtrip(&mut state)
+                .map_err(|e| Error::Wayland(e.to_string()))?;
         }
 
-        let shm = state.shm.clone().ok_or_else(|| Error::Wayland("wl_shm не знайдено".into()))?;
+        let shm = state
+            .shm
+            .clone()
+            .ok_or_else(|| Error::Wayland("wl_shm не знайдено".into()))?;
         let output = state.output.take().ok_or(Error::NoOutput)?;
-        let manager = state.screencopy_manager.take().ok_or(Error::NoScreencopyManager)?;
+        let manager = state
+            .screencopy_manager
+            .take()
+            .ok_or(Error::NoScreencopyManager)?;
 
-        let gbm = if state.linux_dmabuf.is_some() { open_gbm() } else { None };
+        let gbm = if state.linux_dmabuf.is_some() {
+            open_gbm()
+        } else {
+            None
+        };
         if gbm.is_none() && state.linux_dmabuf.is_some() {
             eprintln!("DMA-BUF: GBM недоступний → SHM");
         }
@@ -448,14 +623,19 @@ impl CaptureBackend for WlrCapture {
 
         loop {
             let tick = std::time::Instant::now();
-            if stop.load(Ordering::Relaxed) { break; }
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
 
             state.reset_frame();
             let mut frame = manager.capture_output(1, &output, &qh, ());
             eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
             wait_for_buffer_hint(&mut eq, &mut state)?;
 
-            if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
+            if state.frame_info.failed {
+                frame.destroy();
+                return Err(Error::FrameFailed);
+            }
 
             let mut damage = state.frame_info.damage.clone();
             let fi = &state.frame_info;
@@ -470,7 +650,10 @@ impl CaptureBackend for WlrCapture {
                 let ld = state.linux_dmabuf.as_ref().unwrap();
                 let gd = gbm.as_ref().unwrap();
 
-                if dma_buf.as_ref().map_or(true, |b| b.needs_resize(dw, dh, dfmt)) {
+                if dma_buf
+                    .as_ref()
+                    .is_none_or(|b| b.needs_resize(dw, dh, dfmt))
+                {
                     dma_buf = DmaBuf::try_new(gd, ld, dw, dh, dfmt, &qh);
                     if dma_buf.is_none() {
                         eprintln!("DMA-BUF: не вдалось створити буфер → SHM");
@@ -481,16 +664,22 @@ impl CaptureBackend for WlrCapture {
                     frame.copy(db.buf());
                     eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
                     while !state.frame_info.ready && !state.frame_info.failed {
-                        eq.blocking_dispatch(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
+                        eq.blocking_dispatch(&mut state)
+                            .map_err(|e| Error::Wayland(e.to_string()))?;
                     }
 
                     if state.frame_info.ready {
                         let db = dma_buf.as_ref().unwrap();
                         to_rgba(db.data(), db.drm_format, db.width, db.height, &mut rgba_buf);
                         frame.destroy();
-                        send_frame(&tx,Frame::new(std::mem::take(&mut rgba_buf), db.width, db.height, damage))?;
+                        send_frame(
+                            &tx,
+                            Frame::new(std::mem::take(&mut rgba_buf), db.width, db.height, damage),
+                        )?;
                         let e = tick.elapsed();
-                        if e < frame_duration { std::thread::sleep(frame_duration - e); }
+                        if e < frame_duration {
+                            std::thread::sleep(frame_duration - e);
+                        }
                         continue;
                     }
 
@@ -508,35 +697,50 @@ impl CaptureBackend for WlrCapture {
                     eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
                     wait_for_buffer_hint(&mut eq, &mut state)?;
 
-                    if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
+                    if state.frame_info.failed {
+                        frame.destroy();
+                        return Err(Error::FrameFailed);
+                    }
                     damage = state.frame_info.damage.clone();
                 }
             }
 
             // ── SHM path ──────────────────────────────────────────────────
             let fi = &state.frame_info;
-            if !fi.got_shm { frame.destroy(); continue; }
+            if !fi.got_shm {
+                frame.destroy();
+                continue;
+            }
 
             let (sw, sh, ss) = (fi.shm_width, fi.shm_height, fi.shm_stride);
             let sfmt = fi.shm_format.unwrap_or(wl_shm::Format::Xrgb8888);
-            if shm_buf.as_ref().map_or(true, |b| b.needs_resize(sw, sh)) {
+            if shm_buf.as_ref().is_none_or(|b| b.needs_resize(sw, sh)) {
                 shm_buf = Some(ShmCapBuf::new(&shm, sw, sh, ss, sfmt, &qh));
             }
             let sb = shm_buf.as_ref().unwrap();
             frame.copy(sb.buf());
             eq.flush().map_err(|e| Error::Wayland(e.to_string()))?;
             while !state.frame_info.ready && !state.frame_info.failed {
-                eq.blocking_dispatch(&mut state).map_err(|e| Error::Wayland(e.to_string()))?;
+                eq.blocking_dispatch(&mut state)
+                    .map_err(|e| Error::Wayland(e.to_string()))?;
             }
-            if state.frame_info.failed { frame.destroy(); return Err(Error::FrameFailed); }
+            if state.frame_info.failed {
+                frame.destroy();
+                return Err(Error::FrameFailed);
+            }
 
             let sb = shm_buf.as_ref().unwrap();
             convert_bgrx_to_rgba_inplace(sb.data(), sb.width, sb.height, &mut rgba_buf);
             frame.destroy();
-            send_frame(&tx,Frame::new(std::mem::take(&mut rgba_buf), sb.width, sb.height, damage))?;
+            send_frame(
+                &tx,
+                Frame::new(std::mem::take(&mut rgba_buf), sb.width, sb.height, damage),
+            )?;
 
             let e = tick.elapsed();
-            if e < frame_duration { std::thread::sleep(frame_duration - e); }
+            if e < frame_duration {
+                std::thread::sleep(frame_duration - e);
+            }
         }
 
         Ok(())

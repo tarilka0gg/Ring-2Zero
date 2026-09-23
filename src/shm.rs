@@ -8,9 +8,8 @@ pub struct ShmBuffer {
 
 impl ShmBuffer {
     pub fn new(size: usize) -> Result<Self, std::io::Error> {
-        let fd = unsafe {
-            libc::syscall(libc::SYS_memfd_create, b"screencopy\0".as_ptr(), 0u32) as i32
-        };
+        let fd =
+            unsafe { libc::syscall(libc::SYS_memfd_create, b"screencopy\0".as_ptr(), 0u32) as i32 };
 
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
@@ -19,7 +18,9 @@ impl ShmBuffer {
         // Check ftruncate return value
         let ret = unsafe { libc::ftruncate(fd, size as libc::off_t) };
         if ret != 0 {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
             return Err(std::io::Error::last_os_error());
         }
 
@@ -35,7 +36,9 @@ impl ShmBuffer {
         };
 
         if ptr == libc::MAP_FAILED {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
             return Err(std::io::Error::last_os_error());
         }
 
@@ -72,7 +75,10 @@ mod tests {
     fn new_buffer_has_the_requested_size_and_starts_zeroed() {
         let buf = ShmBuffer::new(4096).expect("memfd_create should work in the test sandbox");
         assert_eq!(buf.as_slice().len(), 4096);
-        assert!(buf.as_slice().iter().all(|&b| b == 0), "a freshly ftruncate'd memfd should read as all zeros");
+        assert!(
+            buf.as_slice().iter().all(|&b| b == 0),
+            "a freshly ftruncate'd memfd should read as all zeros"
+        );
     }
 
     #[test]

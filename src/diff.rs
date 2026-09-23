@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use crate::frame::Frame;
+use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use rayon::prelude::*;
 
 pub struct DiffDetector {
@@ -45,7 +45,8 @@ impl DiffDetector {
         let width = frame.width;
         let height = frame.height;
 
-        let (tile_width, tile_height, tiles_y) = self.config.calculate_tile_dimensions(width, height);
+        let (tile_width, tile_height, tiles_y) =
+            self.config.calculate_tile_dimensions(width, height);
         let total_tiles = (tiles_y * self.config.tiles_x) as usize;
 
         let is_first_frame = self.prev_hashes.is_empty();
@@ -53,7 +54,8 @@ impl DiffDetector {
         if is_first_frame {
             self.prev_hashes = vec![0; total_tiles];
             self.prev_prev_hashes = vec![0; total_tiles];
-            self.tile_metadata.resize(total_tiles, TileMetadata::default());
+            self.tile_metadata
+                .resize(total_tiles, TileMetadata::default());
             self.damaged_tiles = vec![false; total_tiles];
             self.force_redetect = vec![false; total_tiles];
             self.changed_mask = vec![false; total_tiles];
@@ -62,9 +64,12 @@ impl DiffDetector {
         // Перевіряємо чи є damage regions від Wayland
         let has_damage = !frame.damage_regions.is_empty();
 
-        if self.config.debug_mode && self.frame_count % 100 == 0 {
+        if self.config.debug_mode && self.frame_count.is_multiple_of(100) {
             if has_damage {
-                println!("[Damage tracking] Received {} damage regions", frame.damage_regions.len());
+                println!(
+                    "[Damage tracking] Received {} damage regions",
+                    frame.damage_regions.len()
+                );
             } else {
                 println!("[Damage tracking] No damage regions from Wayland compositor");
             }
@@ -82,14 +87,16 @@ impl DiffDetector {
                 let tile_y_start = (damage.y / tile_height).min(tiles_y - 1);
 
                 // Use saturating arithmetic to prevent overflow
-                let tile_x_end = damage.x
+                let tile_x_end = damage
+                    .x
                     .saturating_add(damage.width)
                     .saturating_add(tile_width)
                     .saturating_sub(1)
                     .saturating_div(tile_width)
                     .min(self.config.tiles_x);
 
-                let tile_y_end = damage.y
+                let tile_y_end = damage
+                    .y
                     .saturating_add(damage.height)
                     .saturating_add(tile_height)
                     .saturating_sub(1)
@@ -123,11 +130,29 @@ impl DiffDetector {
         // (`changed_unsent`) — their hash baseline still needs to advance and
         // their change_history still needs to reflect that they changed, even
         // though nothing was sent for them this frame.
-        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, changed_unsent, stats) = (0..total_tiles)
+        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, changed_unsent, stats) = (0
+            ..total_tiles)
             .into_par_iter()
             .fold(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
-                |(mut hashes, mut tiles, mut indices, mut half_hashes, mut changed_unsent, mut stats), i| {
+                || {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        (0u64, 0u64, 0u64, 0u64, 0u64),
+                    )
+                },
+                |(
+                    mut hashes,
+                    mut tiles,
+                    mut indices,
+                    mut half_hashes,
+                    mut changed_unsent,
+                    mut stats,
+                ),
+                 i| {
                     // Damage-based skip only applies once we have a real previous
                     // frame to compare against — on the very first frame there is
                     // no prior content for the client at all, so every tile must
@@ -141,7 +166,11 @@ impl DiffDetector {
                     // re-detection (this was the actual root cause of tiles never
                     // recovering after an ACK-loss invalidation while damage
                     // tracking was active).
-                    if has_damage && !is_first_frame && !damaged_tiles_ref[i] && !force_redetect_ref[i] {
+                    if has_damage
+                        && !is_first_frame
+                        && !damaged_tiles_ref[i]
+                        && !force_redetect_ref[i]
+                    {
                         hashes.push((i, prev_hashes_ref[i]));
                         stats.1 += 1; // damage_skipped
                         return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
@@ -151,20 +180,29 @@ impl DiffDetector {
                     let tx = i as u32 % config.tiles_x;
                     let x = tx * tile_width;
                     let y = ty * tile_height;
-                    let tw = if tx == config.tiles_x - 1 { width - x } else { tile_width };
-                    let th = if ty == tiles_y - 1 { height - y } else { tile_height };
+                    let tw = if tx == config.tiles_x - 1 {
+                        width - x
+                    } else {
+                        tile_width
+                    };
+                    let th = if ty == tiles_y - 1 {
+                        height - y
+                    } else {
+                        tile_height
+                    };
 
                     // Compute half_hash ONCE
                     let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
 
-                    let full_hash = if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
-                        // Half хеш не змінився → Zero-copy!
-                        stats.0 += 1; // skipped_hashes
-                        prev_hashes_ref[i]
-                    } else {
-                        // Half хеш змінився → повний хеш
-                        hash_tile(frame_data, x, y, tw, th, width)
-                    };
+                    let full_hash =
+                        if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
+                            // Half хеш не змінився → Zero-copy!
+                            stats.0 += 1; // skipped_hashes
+                            prev_hashes_ref[i]
+                        } else {
+                            // Half хеш змінився → повний хеш
+                            hash_tile(frame_data, x, y, tw, th, width)
+                        };
 
                     hashes.push((i, full_hash));
 
@@ -227,7 +265,16 @@ impl DiffDetector {
                 },
             )
             .reduce(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                || {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        (0u64, 0u64, 0u64, 0u64, 0u64),
+                    )
+                },
                 |(mut h1, mut t1, mut i1, mut hh1, mut cu1, s1), (h2, t2, i2, hh2, cu2, s2)| {
                     h1.extend(h2);
                     t1.extend(t2);
@@ -240,7 +287,13 @@ impl DiffDetector {
                         i1,
                         hh1,
                         cu1,
-                        (s1.0 + s2.0, s1.1 + s2.1, s1.2 + s2.2, s1.3 + s2.3, s1.4 + s2.4),
+                        (
+                            s1.0 + s2.0,
+                            s1.1 + s2.1,
+                            s1.2 + s2.2,
+                            s1.3 + s2.3,
+                            s1.4 + s2.4,
+                        ),
                     )
                 },
             );
@@ -263,7 +316,7 @@ impl DiffDetector {
         self.total_hashes += total_tiles as u64;
 
         // Логуємо статистику кожні 100 кадрів (silent in benchmark mode)
-        if self.frame_count % 100 == 0 && self.config.debug_mode {
+        if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
             let skip_percent = (self.skipped_hashes as f64 / self.total_hashes as f64) * 100.0;
             let cpu_savings = skip_percent * 0.5;
             println!(
@@ -358,10 +411,17 @@ impl DiffDetector {
         }
 
         // Логуємо статистику адаптивного FPS (тільки в debug режимі)
-        if self.frame_count % 100 == 0 && self.config.debug_mode {
-            println!("[Frame {}] Changed tiles: {}", self.frame_count, changed_tiles.len());
+        if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
+            println!(
+                "[Frame {}] Changed tiles: {}",
+                self.frame_count,
+                changed_tiles.len()
+            );
             if skipped_by_fps > 0 {
-                println!("[Adaptive FPS] Skipped {} tiles due to FPS throttling", skipped_by_fps);
+                println!(
+                    "[Adaptive FPS] Skipped {} tiles due to FPS throttling",
+                    skipped_by_fps
+                );
             }
             if dynamic_sent > 0 || static_sent > 0 {
                 println!(
@@ -472,7 +532,12 @@ mod tests {
     }
 
     fn solid_frame(width: u32, height: u32, value: u8) -> Frame {
-        Frame::new(vec![value; (width * height * 4) as usize], width, height, vec![])
+        Frame::new(
+            vec![value; (width * height * 4) as usize],
+            width,
+            height,
+            vec![],
+        )
     }
 
     // A varied (position-dependent) fill, not a flat color: hash_tile's
@@ -488,7 +553,12 @@ mod tests {
             for col in x..x + w {
                 let offset = ((row * frame.width + col) * 4) as usize;
                 let v = seed.wrapping_add(((row * 7 + col * 13) % 251) as u8);
-                frame.rgba[offset..offset + 4].copy_from_slice(&[v, v.wrapping_add(1), v.wrapping_add(2), 255]);
+                frame.rgba[offset..offset + 4].copy_from_slice(&[
+                    v,
+                    v.wrapping_add(1),
+                    v.wrapping_add(2),
+                    255,
+                ]);
             }
         }
     }
@@ -533,18 +603,29 @@ mod tests {
         detector.detect_changes(&frame); // baseline
 
         // Damage region covering only cell (0,0) -> idx 0, not idx 3.
-        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+        let damage_elsewhere = vec![DamageRegion {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }];
 
         // Sanity check: without invalidation, tile 3 is skipped by damage tracking.
         let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
         let (_, indices) = detector.detect_changes(&f1);
-        assert!(!indices.contains(&3), "tile 3 shouldn't be touched without invalidation");
+        assert!(
+            !indices.contains(&3),
+            "tile 3 shouldn't be touched without invalidation"
+        );
 
         detector.invalidate_tiles(&[3]);
 
         let f2 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere);
         let (_, indices) = detector.detect_changes(&f2);
-        assert!(indices.contains(&3), "invalidated tile must be force-redetected even outside damage regions");
+        assert!(
+            indices.contains(&3),
+            "invalidated tile must be force-redetected even outside damage regions"
+        );
     }
 
     #[test]
@@ -553,7 +634,12 @@ mod tests {
         let frame = solid_frame(W, H, 0);
         detector.detect_changes(&frame);
 
-        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+        let damage_elsewhere = vec![DamageRegion {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }];
         detector.invalidate_tiles(&[3]);
 
         let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
@@ -589,7 +675,11 @@ mod tests {
         paint_region(&mut frame3, 0, 0, 10, 10, 200);
         let (_, indices) = detector.detect_changes(&frame3); // frame 3: continuing change, now throttled
         assert!(!indices.contains(&0), "a continuing dynamic-tile change should be throttled by a large dynamic_tile_fps interval");
-        assert_eq!(detector.get_metadata(0).unchanged_frames, 0, "throttled-but-changed tile must not be counted as unchanged");
+        assert_eq!(
+            detector.get_metadata(0).unchanged_frames,
+            0,
+            "throttled-but-changed tile must not be counted as unchanged"
+        );
         assert_eq!(
             detector.get_current_hashes()[0],
             hash_tile(&frame3.rgba, 0, 0, 10, 10, W),
@@ -605,14 +695,24 @@ mod tests {
         let mut frame2 = solid_frame(W, H, 0);
         paint_region(&mut frame2, 0, 0, 10, 10, 100);
         detector.detect_changes(&frame2); // first change -> classified dynamic, sent immediately
-        assert!(detector.get_metadata(0).last_sent_as_dynamic, "tile 0 should be classified dynamic after its first change");
+        assert!(
+            detector.get_metadata(0).last_sent_as_dynamic,
+            "tile 0 should be classified dynamic after its first change"
+        );
 
         let hash_before = detector.get_current_hashes()[0];
-        assert_ne!(hash_before, 0, "sanity: baseline actually moved off the initial zero");
+        assert_ne!(
+            hash_before, 0,
+            "sanity: baseline actually moved off the initial zero"
+        );
 
         detector.invalidate_cache();
         assert_eq!(detector.get_metadata(0).cached_hash, 0);
-        assert_eq!(detector.get_current_hashes()[0], 0, "dynamic tile's hash baseline must be reset by invalidate_cache");
+        assert_eq!(
+            detector.get_current_hashes()[0],
+            0,
+            "dynamic tile's hash baseline must be reset by invalidate_cache"
+        );
     }
 
     #[test]
@@ -622,6 +722,10 @@ mod tests {
         detector.reset();
 
         let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
-        assert_eq!(changed.len(), 4, "after reset, the next frame should be treated as the first frame again");
+        assert_eq!(
+            changed.len(),
+            4,
+            "after reset, the next frame should be treated as the first frame again"
+        );
     }
 }

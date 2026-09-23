@@ -1,6 +1,5 @@
 /// Diff Detection Profiler - детальний аналіз кожної стадії diff detection
 /// Показує де саме витрачається час у detect_changes()
-
 use screen_streamer::config::Config;
 use screen_streamer::frame::Frame;
 use std::time::Instant;
@@ -52,7 +51,11 @@ impl DiffTimings {
         println!("╚══════════════════════════════════════════════════════════╝");
 
         let total_ms = self.total_us / 1000.0;
-        println!("\nTotal: {:.3} ms ({:.0} FPS capable)\n", total_ms, 1000.0 / total_ms);
+        println!(
+            "\nTotal: {:.3} ms ({:.0} FPS capable)\n",
+            total_ms,
+            1000.0 / total_ms
+        );
 
         self.print_line("1. Half Hash (par)", self.half_hash_us);
         self.print_line("2. Full Hash (par)", self.full_hash_us);
@@ -64,29 +67,41 @@ impl DiffTimings {
         println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!("Statistics:");
         println!("  Total tiles:         {}", self.total_tiles);
-        println!("  Half hashes:         {} ({:.1}%)",
+        println!(
+            "  Half hashes:         {} ({:.1}%)",
             self.half_hash_computed,
-            (self.half_hash_computed as f64 / self.total_tiles as f64) * 100.0);
-        println!("  Zero-copy skipped:   {} ({:.1}%)",
+            (self.half_hash_computed as f64 / self.total_tiles as f64) * 100.0
+        );
+        println!(
+            "  Zero-copy skipped:   {} ({:.1}%)",
             self.zero_copy_skipped,
-            (self.zero_copy_skipped as f64 / self.total_tiles as f64) * 100.0);
-        println!("  Full hashes:         {} ({:.1}%)",
+            (self.zero_copy_skipped as f64 / self.total_tiles as f64) * 100.0
+        );
+        println!(
+            "  Full hashes:         {} ({:.1}%)",
             self.full_hash_computed,
-            (self.full_hash_computed as f64 / self.total_tiles as f64) * 100.0);
+            (self.full_hash_computed as f64 / self.total_tiles as f64) * 100.0
+        );
         println!("  Changed detected:    {}", self.changed_tiles);
         println!("  Tiles sent:          {}", self.tiles_sent);
 
         println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!("Breakdown:");
-        println!("  Hashing (1+2):       {:.3} ms ({:.1}%)",
+        println!(
+            "  Hashing (1+2):       {:.3} ms ({:.1}%)",
             (self.half_hash_us + self.full_hash_us) / 1000.0,
-            ((self.half_hash_us + self.full_hash_us) / self.total_us) * 100.0);
-        println!("  Processing (3+4):    {:.3} ms ({:.1}%)",
+            ((self.half_hash_us + self.full_hash_us) / self.total_us) * 100.0
+        );
+        println!(
+            "  Processing (3+4):    {:.3} ms ({:.1}%)",
             (self.find_changed_us + self.parallel_process_us) / 1000.0,
-            ((self.find_changed_us + self.parallel_process_us) / self.total_us) * 100.0);
-        println!("  Metadata (5+6):      {:.3} ms ({:.1}%)",
+            ((self.find_changed_us + self.parallel_process_us) / self.total_us) * 100.0
+        );
+        println!(
+            "  Metadata (5+6):      {:.3} ms ({:.1}%)",
             (self.metadata_update_us + self.unchanged_update_us) / 1000.0,
-            ((self.metadata_update_us + self.unchanged_update_us) / self.total_us) * 100.0);
+            ((self.metadata_update_us + self.unchanged_update_us) / self.total_us) * 100.0
+        );
     }
 
     fn print_line(&self, name: &str, us: f64) {
@@ -112,7 +127,10 @@ impl InstrumentedDiffDetector {
         }
     }
 
-    fn detect_changes_instrumented(&mut self, frame: &Frame) -> (Vec<screen_streamer::tile::Tile>, Vec<usize>) {
+    fn detect_changes_instrumented(
+        &mut self,
+        frame: &Frame,
+    ) -> (Vec<screen_streamer::tile::Tile>, Vec<usize>) {
         let overall_start = Instant::now();
 
         // Call actual detect_changes
@@ -146,7 +164,10 @@ fn main() {
 
     println!("Configuration:");
     println!("  Resolution: {}x{}", width, height);
-    println!("  Tiles: {}x{} = {} total", config.tiles_x, tiles_y, total_tiles);
+    println!(
+        "  Tiles: {}x{} = {} total",
+        config.tiles_x, tiles_y, total_tiles
+    );
     println!("  Tile size: {}x{} px", tile_width, tile_height);
     println!("  Merge gap: {}", config.merge_gap);
 
@@ -191,10 +212,17 @@ fn main() {
         println!("║  Scenario: {:<47} ║", desc);
         println!("╚══════════════════════════════════════════════════════════╝");
         println!("\nFrames processed: {}", frames);
-        println!("Average time:     {:.3} ms ({:.0} FPS capable)", avg_time_ms, 1000.0 / avg_time_ms);
+        println!(
+            "Average time:     {:.3} ms ({:.0} FPS capable)",
+            avg_time_ms,
+            1000.0 / avg_time_ms
+        );
         println!("Avg changed:      {:.1} tiles", avg_changed);
         println!("Avg sent:         {:.1} tiles", avg_sent);
-        println!("Total tiles:      {} ({}x{})", total_tiles, config.tiles_x, tiles_y);
+        println!(
+            "Total tiles:      {} ({}x{})",
+            total_tiles, config.tiles_x, tiles_y
+        );
     }
 
     println!("\n\n╔══════════════════════════════════════════════════════════╗");
