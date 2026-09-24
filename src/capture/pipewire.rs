@@ -16,7 +16,7 @@ const SPA_VIDEO_FORMAT_BGRA: u32 = 12;
 
 extern "C" {
     fn pw_capture_start(
-        on_frame: unsafe extern "C" fn(*const u8, u32, u32, u32, u32, *mut libc::c_void),
+        on_frame: unsafe extern "C" fn(*const u8, u32, u32, u32, u32, u32, *mut libc::c_void),
         user_data: *mut libc::c_void,
         stop_flag: *const libc::c_int,
         err_buf: *mut libc::c_char,
@@ -38,10 +38,25 @@ unsafe extern "C" fn on_frame_cb(
     height: u32,
     stride: u32,
     spa_fmt: u32,
+    data_size: u32,
     ud: *mut libc::c_void,
 ) {
     let state = &*(ud as *const CallbackState);
-    let size = (stride * height) as usize;
+
+    // `data_size` (the C side's d->chunk->size) is the only value that can
+    // be trusted as an upper bound on how many bytes are actually valid at
+    // `data`; stride*height is just what this frame's own header claims.
+    // Right after an output resize the two can briefly disagree — the
+    // compositor pushes a frame at the new size before format renegotiation
+    // (a fresh SPA_PARAM_Format) has caught up to us — and reading
+    // stride*height bytes unconditionally would then read past the end of
+    // a smaller real buffer. Drop a mismatched frame instead of risking
+    // that; the next one, once format catches up, is fine.
+    let needed = u64::from(stride) * u64::from(height);
+    if needed == 0 || needed > u64::from(data_size) {
+        return;
+    }
+    let size = needed as usize;
     let raw = std::slice::from_raw_parts(data, size);
     let rgba = &mut *state.rgba.get();
 

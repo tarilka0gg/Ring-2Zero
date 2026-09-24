@@ -24,6 +24,7 @@
 #include <pipewire/pipewire.h>
 #include <pipewire/stream.h>
 #include <spa/param/video/format-utils.h>
+#include <spa/param/buffers.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
@@ -35,6 +36,14 @@ typedef void (*pw_frame_cb)(
     uint32_t       height,
     uint32_t       stride,
     uint32_t       spa_format,   /* SPA_VIDEO_FORMAT_* */
+    uint32_t       data_size,    /* d->chunk->size: actual valid bytes at `data` —
+                                   * the only value the callee may trust as an
+                                   * upper bound; stride*height is our own,
+                                   * possibly-stale guess (e.g. right after a
+                                   * resize the format hasn't been renegotiated
+                                   * for yet) and reading that many bytes
+                                   * unconditionally is a use-after-the-end-of
+                                   * -the-actual-buffer read. */
     void          *user_data
 );
 
@@ -103,6 +112,28 @@ static void on_param_changed(void *data, uint32_t id, const struct spa_pod *para
          * per-buffer chunk->stride once actual frames start arriving, since
          * the compositor/GPU may pad rows beyond width*4. */
         ctx->stride  = ctx->width * 4;
+
+        /* Format negotiation isn't done just by accepting this param:
+         * pw_stream.h's own doc comment is explicit that the client must
+         * "complete the negotiation procedure with a call to
+         * pw_stream_update_params()" — without it, PipeWire never proceeds
+         * to buffer negotiation (add_buffer, PAUSED) and .process() is
+         * never invoked, even though the stream can still report itself as
+         * STREAMING (that state reflects the format handshake, not data
+         * flow). This was the actual root cause of frames never reaching
+         * on_frame_cb: the negotiation was simply left unfinished. */
+        uint8_t buf[1024];
+        struct spa_pod_builder b;
+        spa_pod_builder_init(&b, buf, sizeof(buf));
+        uint32_t buffer_size = ctx->stride * ctx->height;
+        const struct spa_pod *params[1];
+        params[0] = spa_pod_builder_add_object(&b,
+            SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers,
+            SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 2, 32),
+            SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
+            SPA_PARAM_BUFFERS_size,    SPA_POD_Int(buffer_size),
+            SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(ctx->stride));
+        pw_stream_update_params(ctx->stream, params, 1);
     }
 }
 
@@ -121,14 +152,36 @@ static void on_process(void *data)
     struct spa_buffer *spabuf = pwbuf->buffer;
     struct spa_data   *d      = &spabuf->datas[0];
 
-    if (d->data && d->chunk && d->chunk->size > 0 && ctx->on_frame) {
+    if (d->data && d->chunk && d->chunk->size > 0 && d->maxsize > 0 && ctx->on_frame) {
         /* Use the real per-buffer stride when PipeWire reports one; padded
          * rows (common on GPU-backed buffers) make width*4 wrong. */
         uint32_t stride = d->chunk->stride > 0 ? (uint32_t)d->chunk->stride : ctx->stride;
+
+        /* spa/buffer/buffer.h's own doc comment on spa_chunk::offset: "offset
+         * of valid data. Should be taken modulo the data maxsize to get the
+         * offset in the data memory." This was previously read as if offset
+         * were always 0 — wrong for any allocator that hands back a ring
+         * buffer style region, which is exactly the kind of native segfault
+         * (reading un-owned memory adjacent to the real frame) this file's
+         * on_process was producing once frames actually started arriving. */
+        uint32_t offset = d->chunk->offset % d->maxsize;
+
+        /* chunk->size is the producer's own claim of how many valid bytes
+         * follow; maxsize is the buffer's actual allocated capacity, a
+         * structural fact set once at buffer creation and not subject to
+         * any race with the producer's write. Trust the smaller of the two,
+         * and bound by what's left after `offset`, so a mismatched or
+         * racy chunk->size can never make us read outside this buffer's
+         * real allocation no matter what it claims. */
+        uint32_t cap = d->maxsize - offset;
+        uint32_t data_size = (uint32_t)d->chunk->size;
+        if (data_size > cap) data_size = cap;
+
         ctx->on_frame(
-            (const uint8_t *)d->data,
+            (const uint8_t *)d->data + offset,
             ctx->width, ctx->height, stride,
             ctx->spa_fmt,
+            data_size,
             ctx->user_data
         );
     }
@@ -136,18 +189,24 @@ static void on_process(void *data)
     pw_stream_queue_buffer(ctx->stream, pwbuf);
 }
 
-/* KNOWN ISSUE (2026-09-24): in testing under a private/nested portal
- * sandbox, the client stream reliably reaches PW_STREAM_STATE_STREAMING
- * with a correctly negotiated format (confirmed via on_param_changed
- * SPA_PARAM_Format), but on_process below is then never invoked, so no
- * pixel data ever reaches on_frame_cb / the Rust side. Portal negotiation
- * itself (CreateSession/SelectSources/Start, see the fixes above and in
- * wait_for_response/parse_session/parse_start) is confirmed solid and no
- * longer the blocker. Not yet root-caused — worth checking: whether an
- * explicit pw_stream_set_active() is needed here, whether .add_buffer /
- * .remove_buffer stream_events need to be hooked (the server side logs
- * sending 2 "add buffer" events we don't handle), or whether this is
- * specific to the private-bus/nested-compositor sandbox used to test it. */
+/* STATUS (2026-09-24): the client stream previously reached
+ * PW_STREAM_STATE_STREAMING with a correctly negotiated format but
+ * on_process below was never invoked. Root-caused to two real bugs, both
+ * fixed above: (1) pw_stream.h's own doc comment requires the client to
+ * complete format negotiation with pw_stream_update_params() — without
+ * it, PipeWire never proceeds to buffer negotiation (add_buffer, PAUSED)
+ * and .process() is never invoked, even though the stream can still
+ * report itself as STREAMING; (2) on_process itself ignored
+ * spa_chunk::offset (must be applied to d->data, per spa/buffer/buffer.h)
+ * and never bounded a read against d->maxsize (the buffer's real
+ * allocated capacity — the only value immune to a race on the
+ * producer-supplied chunk->size). With both fixed, on_process was
+ * confirmed to fire on a real frame. Not yet confirmed end-to-end through
+ * to a decoded frame in the browser — testing this needs an isolated
+ * compositor that ISN'T a nested Wayland client of the developer's real
+ * desktop session (a crashing nested client under repeated stress can
+ * destabilize its parent compositor); a container or a separate VM, not
+ * `niri` nested inside the real one. */
 static const struct pw_stream_events stream_events = {
     PW_VERSION_STREAM_EVENTS,
     .param_changed = on_param_changed,
