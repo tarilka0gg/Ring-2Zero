@@ -1,3 +1,9 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 /// Detailed performance breakdown benchmark with REALISTIC tile merging scenarios
 /// Shows actual FPS based on real-world usage patterns
 use screen_streamer::config::Config;
@@ -107,7 +113,7 @@ impl ScenarioResult {
             self.avg_tiles_before,
             self.avg_tiles_after,
             if self.avg_tiles_before > 0.0 {
-                ((self.avg_tiles_before - self.avg_tiles_after) / self.avg_tiles_before * 100.0)
+                (self.avg_tiles_before - self.avg_tiles_after) / self.avg_tiles_before * 100.0
             } else {
                 0.0
             }
@@ -147,7 +153,7 @@ fn benchmark_scenario(
     let tile_merger = TileMerger::new(config.merge_gap);
 
     let grid = config.grid(width, height);
-    let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
+    let (_tile_width, _tile_height, _tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
     // Baseline frame - створюємо реалістичний статичний фон
     let baseline = generate_scenario_frame(width, height, 0, scenario);
@@ -233,12 +239,11 @@ fn main() {
     println!("║              Average of 10 runs per scenario            ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    let mut config = Config::default();
-    config.debug_mode = false; // Suppress debug output during benchmark
+    let config = Config::default(); // debug_mode is already false
 
     let tile_width = 1920 / config.tiles_x;
     let tile_height = tile_width * 1080 / 1920;
-    let tiles_y = (1080 + tile_height - 1) / tile_height;
+    let tiles_y = 1080_u32.div_ceil(tile_height);
 
     println!("Resolution: 1920x1080");
     println!(

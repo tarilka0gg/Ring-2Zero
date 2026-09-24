@@ -185,8 +185,8 @@ fn generate_tile_data(width: u32, height: u32, seed: u32) -> Vec<u8> {
     let size = (width * height * 4) as usize;
     let mut data = vec![0u8; size];
 
-    for i in 0..size {
-        data[i] = ((i * 7 + seed as usize * 13) % 256) as u8;
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte = ((i * 7 + seed as usize * 13) % 256) as u8;
     }
 
     data
