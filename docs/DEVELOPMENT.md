@@ -88,6 +88,9 @@ A tile is "dynamic" if its hash changed on both of the last two frames (`prev_pr
 ### Priority scoring
 Tiles queued for sending are sorted highest-priority-first: `frequency_score × priority_frequency_weight + change_speed × priority_speed_weight + center_score × priority_center_weight`, where frequency comes from the `CircularBuffer` change history, change_speed is the popcount of the tile's last hash XOR-diff, and center_score favors tiles closer to the screen's center.
 
+### Bandwidth adaptation
+`BandwidthController` (`bandwidth.rs`) samples the DataChannel's `bufferedAmount` on every send-loop tick (every `ACK_POLL` = 50 ms, and on every frame) and derives a quality-scale multiplier in `[0.3, 1.0]`: above a 256 KiB high watermark it backs off by 0.15 immediately; below a 32 KiB low watermark it recovers by 0.05 only after 3 consecutive clear samples (recovery is deliberately slower than backoff, so a link oscillating around the watermark trends down rather than thrashing). The scale is written to a shared `AtomicU32` (an f32's bit pattern — the pipeline reads it on its own thread, once per frame) and multiplies `webp_quality_low`/`webp_quality_high` in `diff.rs`'s quality assignment, clamped to fast_webp's valid `0.0..=100.0` range. Pure and fully unit-tested independent of any real DataChannel.
+
 ### Per-tile encode cache
 Each single-cell tile's last WebP encode is cached, keyed by its content hash — a tile re-selected for sending without its pixels changing (e.g. by the periodic quality refresh below) skips extraction and encoding entirely. Restricted to single-cell tiles: a merged multi-cell tile's cache key only covers its one representative cell's hash, so applying the same shortcut to the whole merged region could serve stale bytes for a *different* cell that did change (the bug fixed across v0.299.1/v0.299.2).
 

@@ -85,6 +85,14 @@ impl Pipeline {
         true
     }
 
+    /// Multiplies every tile's WebP quality by `scale` from here on — see
+    /// `bandwidth.rs::BandwidthController`. Called once per frame from
+    /// `stream.rs` with whatever the send loop last measured; harmless to
+    /// call with the same value repeatedly.
+    pub fn set_quality_scale(&mut self, scale: f32) {
+        self.diff_detector.set_quality_scale(scale);
+    }
+
     /// Diffs, merges, prioritises and encodes one frame. Returns None when there
     /// is nothing to send (no changed tiles and no header).
     /// If the resolution changed but no tiles changed, returns Some with the

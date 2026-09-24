@@ -95,6 +95,9 @@ no separate static file host, no system service beyond the binary itself.
 - **Auto-reconnect**, both at the WebRTC layer (renegotiation over the
   same WebSocket) and from the browser page itself if the whole
   connection drops.
+- **Bandwidth adaptation** — tile quality backs off automatically when the
+  DataChannel's own send buffer starts piling up (a congested link), and
+  recovers gradually once it drains, without any configuration.
 
 **Access & control**
 - **Token authentication**, sent as the client's first WebSocket message

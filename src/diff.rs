@@ -20,6 +20,10 @@ pub struct DiffDetector {
     frame_count: u64,
     skipped_hashes: u64,
     total_hashes: u64,
+    /// Multiplies `webp_quality_low`/`webp_quality_high`, set from outside
+    /// by `Pipeline::set_quality_scale` — see `bandwidth.rs`. 1.0 (no
+    /// effect) until anything says otherwise.
+    quality_scale: f32,
 }
 
 impl DiffDetector {
@@ -35,7 +39,12 @@ impl DiffDetector {
             frame_count: 0,
             skipped_hashes: 0,
             total_hashes: 0,
+            quality_scale: 1.0,
         }
+    }
+
+    pub fn set_quality_scale(&mut self, scale: f32) {
+        self.quality_scale = scale;
     }
 
     pub fn detect_changes(&mut self, frame: &Frame) -> (Vec<Tile>, Vec<usize>) {
@@ -123,6 +132,7 @@ impl DiffDetector {
         let force_redetect_ref = &self.force_redetect;
         let frame_count = self.frame_count;
         let config = &self.config;
+        let quality_scale = self.quality_scale;
 
         // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata.
         // Besides the tiles actually queued for sending, this also tracks
@@ -222,11 +232,17 @@ impl DiffDetector {
                         || frames_since_last >= interval;
 
                     if should_send {
-                        let quality = if is_dynamic {
+                        let base_quality = if is_dynamic {
                             config.webp_quality_low
                         } else {
                             config.webp_quality_high
                         };
+                        // fast_webp requires quality in 0.0..=100.0; the
+                        // scale itself is already clamped to [MIN_SCALE, 1.0]
+                        // by BandwidthController, but re-clamp here too so a
+                        // future caller of set_quality_scale outside that
+                        // range can't hand fast_webp an invalid value.
+                        let quality = (base_quality * quality_scale).clamp(1.0, 100.0);
 
                         // Lock-free push to thread-local vectors
                         tiles.push(Tile::new(x, y, tw, th, quality));
@@ -538,6 +554,30 @@ mod tests {
                 ]);
             }
         }
+    }
+
+    #[test]
+    fn quality_scale_multiplies_the_configured_quality() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.set_quality_scale(0.5);
+        let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
+        // First frame: every tile is "dynamic" is false the very first time
+        // (is_first_frame bypasses the dynamic check), so this uses
+        // webp_quality_high from test_config — see its own default below.
+        let expected = (test_config(2, 60, 60).webp_quality_high * 0.5).clamp(1.0, 100.0);
+        assert!(
+            changed.iter().all(|t| t.quality == expected),
+            "{:?}",
+            changed
+        );
+    }
+
+    #[test]
+    fn quality_scale_never_produces_an_out_of_range_quality() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.set_quality_scale(1000.0); // deliberately absurd
+        let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
+        assert!(changed.iter().all(|t| (0.0..=100.0).contains(&t.quality)));
     }
 
     #[test]

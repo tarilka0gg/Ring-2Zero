@@ -9,6 +9,7 @@
 //! epoch-tagged grid cells; the pipeline itself drops ones from an older
 //! tile grid, so a resize mid-flight can't misapply them.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 
+use crate::bandwidth::BandwidthController;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::frame::Frame;
@@ -48,10 +50,18 @@ pub async fn run_session(
 
     let (encoded_tx, mut encoded_rx) = tokio::sync::mpsc::channel::<EncodedFrame>(4);
     let (lost_tx, lost_rx) = mpsc::channel::<LostCells>();
+    // Bit pattern of an f32: the pipeline (its own dedicated thread) reads
+    // this once per frame, this async loop writes it once per tick — an
+    // AtomicU32 needs no lock for that, unlike an f32 itself.
+    let quality_scale = Arc::new(AtomicU32::new(1.0f32.to_bits()));
     let process_handle = std::thread::Builder::new()
         .name("r2z-pipeline".into())
-        .spawn(move || processing_loop(config, frame_rx, lost_rx, encoded_tx))?;
+        .spawn({
+            let quality_scale = Arc::clone(&quality_scale);
+            move || processing_loop(config, frame_rx, lost_rx, encoded_tx, quality_scale)
+        })?;
 
+    let mut bandwidth = BandwidthController::new();
     let mut acks = AckTracker::new(ACK_TIMEOUT);
     let mut ticker = tokio::time::interval(ACK_POLL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -74,6 +84,12 @@ pub async fn run_session(
                 log::debug!("Batch lost in transit, re-queuing {} cells", lost.1.len());
                 let _ = lost_tx.send(lost);
             }
+
+            // Cheap (a lock + read of a shared field inside the DataChannel),
+            // so sampled on every loop pass — both the ACK_POLL ticks and
+            // real frame arrivals — rather than gating it behind either.
+            let scale = bandwidth.sample(dc.buffered_amount().await);
+            quality_scale.store(scale.to_bits(), Ordering::Relaxed);
 
             let Some(mut frame) = frame else { continue };
             if let Some((w, h)) = frame.header {
@@ -124,6 +140,7 @@ fn processing_loop(
     frame_rx: mpsc::Receiver<Frame>,
     lost_rx: mpsc::Receiver<LostCells>,
     encoded_tx: tokio::sync::mpsc::Sender<EncodedFrame>,
+    quality_scale: Arc<AtomicU32>,
 ) {
     let frame_duration = config.frame_duration();
     let mut pipeline = Pipeline::new(config);
@@ -146,6 +163,7 @@ fn processing_loop(
             }
         };
 
+        pipeline.set_quality_scale(f32::from_bits(quality_scale.load(Ordering::Relaxed)));
         if let Some(out) = pipeline.process(&frame) {
             if encoded_tx.blocking_send(out).is_err() {
                 break;
