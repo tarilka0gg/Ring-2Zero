@@ -496,7 +496,7 @@ fn to_rgba(data: &[u8], fmt: u32, w: u32, h: u32, dst: &mut Vec<u8>) {
         DRM_FORMAT_XBGR8888 => {
             dst.resize(data.len(), 0);
             dst.copy_from_slice(data);
-            for px in dst.chunks_exact_mut(4) {
+            for px in dst.as_chunks_mut::<4>().0 {
                 px[3] = 255;
             }
         }

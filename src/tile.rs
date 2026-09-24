@@ -172,8 +172,7 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
         SEED_LANE_0 as i64,
     );
 
-    let chunks = data.chunks_exact(32);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<32>();
 
     for chunk in chunks {
         let v = _mm256_loadu_si256(chunk.as_ptr() as *const __m256i);
@@ -221,8 +220,7 @@ unsafe fn hash_sse2(data: &[u8]) -> u64 {
     let mut seed = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
     let seed_inc = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
 
-    let chunks = data.chunks_exact(16);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<16>();
 
     for chunk in chunks {
         let v = _mm_loadu_si128(chunk.as_ptr() as *const __m128i);
