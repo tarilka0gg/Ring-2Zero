@@ -93,7 +93,10 @@ unsafe impl Send for GbmDevice {}
 
 struct WlrState {
     shm: Option<wl_shm::WlShm>,
-    output: Option<wl_output::WlOutput>,
+    /// Every advertised output, in registry order, paired with its name
+    /// (from the wl_output.name event, wl_output >= 4) once it arrives —
+    /// `None` until then, or forever on a compositor too old to send it.
+    outputs: Vec<(wl_output::WlOutput, Option<String>)>,
     screencopy_manager: Option<ZwlrScreencopyManagerV1>,
     linux_dmabuf: Option<ZwpLinuxDmabufV1>,
     supported_dma: Vec<(u32, u64)>, // (drm_format, modifier)
@@ -121,7 +124,7 @@ impl WlrState {
     fn new() -> Self {
         Self {
             shm: None,
-            output: None,
+            outputs: Vec::new(),
             screencopy_manager: None,
             linux_dmabuf: None,
             supported_dma: Vec::new(),
@@ -158,15 +161,24 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlrState {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name, interface, ..
+            name,
+            interface,
+            version,
         } = event
         {
             match interface.as_str() {
                 "wl_shm" => {
                     state.shm = Some(reg.bind(name, 1, qh, ()));
                 }
-                "wl_output" if state.output.is_none() => {
-                    state.output = Some(reg.bind(name, 1, qh, ()));
+                "wl_output" => {
+                    // Index into `outputs`, carried as this binding's user
+                    // data so the Name event handler below can find its
+                    // slot — bind()'s user-data type must stay uniform
+                    // across every wl_output, so it can't just be `()`
+                    // anymore now that more than one is tracked.
+                    let idx = state.outputs.len() as u32;
+                    let output: wl_output::WlOutput = reg.bind(name, version.min(4), qh, idx);
+                    state.outputs.push((output, None));
                 }
                 "zwlr_screencopy_manager_v1" => {
                     state.screencopy_manager = Some(reg.bind(name, 3, qh, ()));
@@ -213,15 +225,20 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for WlrState {
     ) {
     }
 }
-impl Dispatch<wl_output::WlOutput, ()> for WlrState {
+impl Dispatch<wl_output::WlOutput, u32> for WlrState {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         _: &wl_output::WlOutput,
-        _: wl_output::Event,
-        _: &(),
+        event: wl_output::Event,
+        idx: &u32,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if let wl_output::Event::Name { name } = event {
+            if let Some(slot) = state.outputs.get_mut(*idx as usize) {
+                slot.1 = Some(name);
+            }
+        }
     }
 }
 impl Dispatch<ZwlrScreencopyManagerV1, ()> for WlrState {
@@ -590,17 +607,22 @@ impl CaptureBackend for WlrCapture {
         let mut state = WlrState::new();
         eq.roundtrip(&mut state)
             .map_err(|e| Error::Wayland(e.to_string()))?;
-        // Second roundtrip to collect DMA-BUF format/modifier events
-        if state.linux_dmabuf.is_some() {
-            eq.roundtrip(&mut state)
-                .map_err(|e| Error::Wayland(e.to_string()))?;
-        }
+        // Second roundtrip: collects DMA-BUF format/modifier events, and
+        // each output's Name event (wl_output >= 4) — both are sent by the
+        // compositor in response to binds this state's registry handler
+        // issues while processing the FIRST roundtrip's Global events, so
+        // one more round-trip is needed to be sure they've all arrived
+        // before RING2ZERO_OUTPUT selection below runs.
+        eq.roundtrip(&mut state)
+            .map_err(|e| Error::Wayland(e.to_string()))?;
 
         let shm = state
             .shm
             .clone()
             .ok_or_else(|| Error::Wayland("wl_shm not found".into()))?;
-        let output = state.output.take().ok_or(Error::NoOutput)?;
+        let output = super::select_output(&state.outputs, super::desired_output_name().as_deref())
+            .cloned()
+            .ok_or(Error::NoOutput)?;
         let manager = state
             .screencopy_manager
             .take()

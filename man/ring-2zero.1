@@ -79,6 +79,9 @@ Comma-separated STUN/TURN servers for connections across NAT: stun:host:port, tu
 Same as
 .BR \-\-control .
 .TP
+.B RING2ZERO_OUTPUT
+Capture this named output (e.g. DP-1, eDP-1) instead of the first one the compositor advertises, on a multi-monitor machine. Falls back to the first output, with a warning naming what was actually available, if the name doesn't match. wlr-screencopy backend only, for now.
+.TP
 .B RUST_LOG
 Standard
 .B env_logger
