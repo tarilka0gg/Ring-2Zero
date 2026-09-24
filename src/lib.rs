@@ -1,6 +1,7 @@
 // Library exports for screen-streamer
 
 pub mod auth;
+pub mod bandwidth;
 pub mod capture;
 pub mod config;
 pub mod convert;
