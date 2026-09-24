@@ -1,6 +1,7 @@
 # Changelog
 
 ## v0.400.0 (September 2026) — remaster
+- **Changed**: client page UI polish — the statusbar now wraps cleanly down to a 320px-wide phone (the button row used to just overflow off-screen), per-connection diagnostics (msgs/ack/tileMsgs/…) are hidden behind a **DEBUG** toggle instead of always shown (`?debug=1` opens it pre-expanded), the page viewport blocks pinch-zoom (it fought with touch dragging in `--control` mode), and the tab now has a real favicon instead of the browser's generic one.
 - **Changed**: the client/server protocol changed, so use the page served by the same binary. Older cached or separately hosted `client.html` copies won't connect: the token moved out of the URL into the first WebSocket message, and the server now sends a `hello` with the ICE servers after authentication.
 - **Added**: remote control (`--control` / `RING2ZERO_CONTROL`). A **КЕРУВАННЯ** toggle appears in the page, and mouse, wheel and keyboard input is injected through `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` over an ordered `input` DataChannel. The pointer is bound to the streamed output, the keyboard reuses the compositor's keymap, and every held key/button is released when the tab loses focus or the session ends.
 - **Added**: `RING2ZERO_ICE_SERVERS` for STUN/TURN across NAT. It's validated at startup, and the same list is handed to the browser, so nothing needs configuring on the client side.

@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="uk">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta charset="UTF-8">
 <title>Ring-2Zero</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='4' width='20' height='13' rx='2' fill='none' stroke='%23af3a03' stroke-width='2'/%3E%3Cline x1='8' y1='21' x2='16' y2='21' stroke='%23af3a03' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='12' y1='17' x2='12' y2='21' stroke='%23af3a03' stroke-width='2'/%3E%3Ccircle cx='12' cy='10.5' r='2.5' fill='%23af3a03'/%3E%3C/svg%3E">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -16,42 +17,75 @@
     overflow: hidden;
   }
   #statusbar {
-    padding: 0 16px;
+    padding: 6px 12px;
     background: #111;
     border-bottom: 1px solid #222;
     display: flex;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 6px 16px;
     font-size: 12px;
     color: #666;
     flex-shrink: 0;
-    height: 36px;
+    min-height: 36px;
     align-items: center;
   }
   #statusbar span { color: #e0e0e0; }
+  #status-group { display: flex; align-items: center; white-space: nowrap; }
   #status-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: #333; display: inline-block; margin-right: 6px;
+    flex-shrink: 0;
     transition: background 0.3s;
   }
   #status-dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
-  #status-dot.connecting { background: #fbbf24; }
+  #status-dot.connecting { background: #fbbf24; animation: pulse 1.2s ease-in-out infinite; }
   #status-dot.error     { background: #f87171; }
-  #btn-mode {
-    margin-left: auto; padding: 2px 10px;
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  #stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    color: #666;
+  }
+
+  #btn-row {
+    margin-left: auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .btn {
+    padding: 3px 10px;
     background: #222; border: 1px solid #444; color: #e0e0e0;
     font-family: 'Courier New', monospace; font-size: 11px;
     cursor: pointer; border-radius: 3px; user-select: none;
+    transition: background 0.15s, border-color 0.15s;
+    min-height: 26px;
   }
-  #btn-mode:hover, #btn-control:hover { background: #333; }
-  #btn-control {
-    padding: 2px 10px;
-    background: #222; border: 1px solid #444; color: #e0e0e0;
-    font-family: 'Courier New', monospace; font-size: 11px;
-    cursor: pointer; border-radius: 3px; user-select: none;
-  }
+  .btn:hover { background: #333; }
+  .btn:active { background: #3a3a3a; }
   #btn-control[hidden] { display: none; }
   #btn-control.on { background: #7c2d12; border-color: #c2410c; }
+  #btn-debug.on { background: #333; border-color: #555; color: #fff; }
   #display-canvas.control { cursor: crosshair; touch-action: none; }
+
+  #debug-panel {
+    display: none;
+    width: 100%;
+    padding-top: 4px;
+    font-size: 11px;
+    color: #555;
+    border-top: 1px dashed #222;
+  }
+  #debug-panel.on { display: block; }
+
+  @media (max-width: 640px) {
+    #stats { display: none; }
+    #statusbar { min-height: 32px; padding: 5px 10px; }
+    .btn { padding: 5px 10px; }
+  }
 
   #viewport {
     flex: 1;
@@ -119,14 +153,19 @@
 <body>
 
 <div id="statusbar">
-  <div><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
-  <div>Тайлів/с: <span id="tiles">—</span></div>
-  <div>Трафік: <span id="frame-size">—</span></div>
-  <div>Латентність: <span id="latency">—</span></div>
-  <div>Розмір: <span id="info">—</span></div>
-  <div>Debug: <span id="debug-info">—</span></div>
-  <button id="btn-mode">FIT</button>
-  <button id="btn-control" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
+  <div id="status-group"><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
+  <div id="stats">
+    <div>Тайлів/с: <span id="tiles">—</span></div>
+    <div>Трафік: <span id="frame-size">—</span></div>
+    <div>Латентність: <span id="latency">—</span></div>
+    <div>Розмір: <span id="info">—</span></div>
+  </div>
+  <div id="btn-row">
+    <button id="btn-debug" class="btn" title="Показати діагностику з'єднання">DEBUG</button>
+    <button id="btn-mode" class="btn">FIT</button>
+    <button id="btn-control" class="btn" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
+  </div>
+  <div id="debug-panel"><span id="debug-info">—</span></div>
 </div>
 
 <div id="viewport">
@@ -161,6 +200,8 @@
   const infoEl      = document.getElementById('info');
   const btnMode     = document.getElementById('btn-mode');
   const btnControl  = document.getElementById('btn-control');
+  const btnDebug    = document.getElementById('btn-debug');
+  const debugPanel  = document.getElementById('debug-panel');
   const passwordOverlay = document.getElementById('password-overlay');
   const passwordForm    = document.getElementById('password-form');
   const passwordInput   = document.getElementById('password-input');
@@ -169,6 +210,18 @@
   passwordToggle.addEventListener('click', () => {
     passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password';
   });
+
+  // Raw per-message diagnostics (msgs/ack/tileMsgs/…) are developer noise
+  // for a normal viewer, so they're off by default — same philosophy as the
+  // server's own --debug flag. `?debug=1` opens it pre-toggled, so a support
+  // link can be shared with it already visible.
+  const debugWanted = new URLSearchParams(location.search).get('debug') === '1';
+  function setDebugPanel(on) {
+    debugPanel.classList.toggle('on', on);
+    btnDebug.classList.toggle('on', on);
+  }
+  btnDebug.addEventListener('click', () => setDebugPanel(!debugPanel.classList.contains('on')));
+  setDebugPanel(debugWanted);
 
   let mode    = 'fit';
   let screenW = 0;
