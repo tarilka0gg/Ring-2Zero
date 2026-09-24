@@ -237,6 +237,7 @@ Everything is configured via environment variables plus a handful of CLI flags �
 | `RING2ZERO_MAX_FPS` | unset | Caps `target_fps`/`static_tile_fps`/`dynamic_tile_fps` uniformly to N (clamped to 1–1000) — a quick bandwidth-constrained testing knob. |
 | `RING2ZERO_ICE_SERVERS` | unset (host candidates only) | Comma-separated STUN/TURN servers: `stun:host:port`, `turn:user:pass@host:port[?transport=tcp]`, `turns:…`. Needed only across NAT — see [Remote access](#remote-access). The server hands the same list to the browser. A malformed entry stops startup with an error. |
 | `RING2ZERO_CONTROL` | unset | Same as `--control` — see [Remote control](#remote-control). |
+| `RING2ZERO_OUTPUT` | unset (first output) | Capture this named output (e.g. `DP-1`, `eDP-1` — `wlr-randr` or `niri msg outputs` list yours) on a multi-monitor machine, instead of whichever one the compositor happens to advertise first. Falls back to the first output, with a warning naming what was actually available, if the name doesn't match. Only takes effect on the `wlr-screencopy` backend for now. |
 
 CLI flags:
 

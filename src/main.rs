@@ -156,6 +156,8 @@ fn help_text() -> String {
      \x20   RING2ZERO_ICE_SERVERS     STUN/TURN for use across NAT, comma-separated:\n\
      \x20                             stun:host:port,turn:user:pass@host:port\n\
      \x20   RING2ZERO_CONTROL         Same as --control\n\
+     \x20   RING2ZERO_OUTPUT          Capture this named output (e.g. DP-1) instead of\n\
+     \x20                             the first one; falls back to the first if not found\n\
      \n\
      Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
      everything else it does and just add the alias by hand — see its\n\
