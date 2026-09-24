@@ -1,4 +1,4 @@
-.TH RING-2ZERO 1 "2026-07-21" "ring-2zero 0.300.1" "User Commands"
+.TH RING-2ZERO 1 "2026-09-23" "ring-2zero 0.400.0" "User Commands"
 .SH NAME
 ring-2zero \- Wayland screen streaming server over WebRTC
 .SH SYNOPSIS
@@ -34,6 +34,9 @@ instead.
 .TP
 .B \-\-debug
 Verbose per-tile/per-frame diagnostics, printed every 100 frames.
+.TP
+.B \-\-control
+Allow connected clients to control this machine's mouse and keyboard (remote control). Requires a compositor with zwlr_virtual_pointer_manager_v1 and zwp_virtual_keyboard_manager_v1. Anyone holding the token gets full input access; keep the port reachable only over a VPN.
 .SH USAGE
 Once running, open
 .B http://<this\-host>:9001
@@ -68,6 +71,16 @@ Cap
 and
 .I dynamic_tile_fps
 uniformly to a given value, clamped to 1\(en1000.
+.TP
+.B RING2ZERO_ICE_SERVERS
+Comma-separated STUN/TURN servers for connections across NAT: stun:host:port, turn:user:pass@host:port[?transport=tcp], or turns:... . Unset: host candidates only, which works on a LAN or over a VPN such as Tailscale. The same list is sent to the browser. A malformed entry stops startup with an error.
+.TP
+.B RING2ZERO_CONTROL
+Same as
+.BR \-\-control .
+.TP
+.B RING2ZERO_OUTPUT
+Capture this named output (e.g. DP-1, eDP-1) instead of the first one the compositor advertises, on a multi-monitor machine. Falls back to the first output, with a warning naming what was actually available, if the name doesn't match. wlr-screencopy backend only, for now.
 .TP
 .B RUST_LOG
 Standard

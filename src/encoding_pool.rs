@@ -1,16 +1,16 @@
 // Encoding Thread Pool Implementation
 // Provides persistent worker threads with warm encoder cache
 
-use std::thread;
-use std::time::Duration;
-use crossbeam::channel::{bounded, Sender, Receiver};
 use crate::tile::Tile;
 use crate::tile_buffer_pool::TileBufferPool;
+use crossbeam::channel::{bounded, Receiver, Sender};
+use std::thread;
+use std::time::Duration;
 
 pub struct EncodingTask {
     pub tile: Tile,
-    pub tile_data: Vec<u8>,  // RGB data for this tile
-    pub tile_idx: usize,     // Original index
+    pub tile_data: Vec<u8>, // RGB data for this tile
+    pub tile_idx: usize,    // Original index
 }
 
 pub struct EncodedResult {
@@ -33,7 +33,7 @@ impl EncodingPool {
             .map(|_worker_id| {
                 let task_rx: Receiver<EncodingTask> = task_rx.clone();
                 let result_tx: Sender<EncodedResult> = result_tx.clone();
-                let pool = buffer_pool.clone();  // Clone Arc (cheap)
+                let pool = buffer_pool.clone(); // Clone Arc (cheap)
 
                 thread::spawn(move || {
                     // Worker loop
@@ -46,10 +46,17 @@ impl EncodingPool {
                                 quality: task.tile.quality,
                                 ..Default::default()
                             },
-                        ).unwrap_or_else(|e| {
-                            eprintln!("⚠️  WebP encoding error at tile ({}, {}), {}×{}: {:?}",
-                                      task.tile.x, task.tile.y, task.tile.width, task.tile.height, e);
-                            eprintln!("    Attempting fallback encoding with quality 50...");
+                        )
+                        .unwrap_or_else(|e| {
+                            log::error!(
+                                "WebP encoding error at tile ({}, {}), {}×{}: {:?}",
+                                task.tile.x,
+                                task.tile.y,
+                                task.tile.width,
+                                task.tile.height,
+                                e
+                            );
+                            log::warn!("Attempting fallback encoding with quality 50...");
 
                             // Fallback: try with lower quality
                             fast_webp::encode_rgba(
@@ -60,8 +67,9 @@ impl EncodingPool {
                                     quality: 50.0,
                                     ..Default::default()
                                 },
-                            ).unwrap_or_else(|e2| {
-                                eprintln!("❌ CRITICAL: Worker fallback encoding failed: {:?}", e2);
+                            )
+                            .unwrap_or_else(|e2| {
+                                log::error!("Worker fallback encoding failed: {:?}", e2);
                                 Vec::new()
                             })
                         });
@@ -85,7 +93,10 @@ impl EncodingPool {
         }
     }
 
-    pub fn submit(&self, task: EncodingTask) -> Result<(), crossbeam::channel::SendError<EncodingTask>> {
+    pub fn submit(
+        &self,
+        task: EncodingTask,
+    ) -> Result<(), crossbeam::channel::SendError<EncodingTask>> {
         self.task_tx.send(task)
     }
 
@@ -98,7 +109,11 @@ impl EncodingPool {
                 Ok(result) => results.push(result),
                 Err(_) => {
                     // Timeout or disconnect - worker likely panicked
-                    eprintln!("Warning: encoding_pool.collect_results() timeout after {} results (expected {})", results.len(), count);
+                    log::warn!(
+                        "encoding_pool.collect_results() timeout after {} results (expected {})",
+                        results.len(),
+                        count
+                    );
                     break;
                 }
             }
@@ -130,7 +145,8 @@ mod tests {
                 tile: Tile::new(0, 0, 4, 4, 50.0),
                 tile_data: vec![128u8; 4 * 4 * 4],
                 tile_idx: idx,
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         let mut results = pool.collect_results(3);
@@ -139,7 +155,10 @@ mod tests {
         assert_eq!(results.len(), 3);
         for (i, r) in results.iter().enumerate() {
             assert_eq!(r.tile_idx, i);
-            assert!(!r.data.is_empty(), "encoded tile {i} should produce non-empty WebP bytes");
+            assert!(
+                !r.data.is_empty(),
+                "encoded tile {i} should produce non-empty WebP bytes"
+            );
         }
     }
 }

@@ -1,6 +1,11 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 /// Detailed performance breakdown benchmark with REALISTIC tile merging scenarios
 /// Shows actual FPS based on real-world usage patterns
-
 use screen_streamer::config::Config;
 use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
@@ -29,9 +34,9 @@ fn generate_scenario_frame(width: u32, height: u32, frame_num: usize, scenario: 
             // Помірна активність: text typing + cursor blinking
             // Змінюється ~15-20% екрана (text editor + cursor)
             let areas = vec![
-                (200, 300, 400, 60),   // Text area
-                (200, 450, 300, 40),   // Second text area
-                (1700, 50, 200, 30),   // Clock
+                (200, 300, 400, 60), // Text area
+                (200, 450, 300, 40), // Second text area
+                (1700, 50, 200, 30), // Clock
             ];
             for (start_x, start_y, w, h) in areas {
                 for y in start_y..start_y + h {
@@ -103,31 +108,52 @@ impl ScenarioResult {
         println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         println!("{}: {}", self.scenario, self.description);
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!("  Avg tiles:        {:.1} → {:.1} ({:.1}% reduction)",
-            self.avg_tiles_before, self.avg_tiles_after,
+        println!(
+            "  Avg tiles:        {:.1} → {:.1} ({:.1}% reduction)",
+            self.avg_tiles_before,
+            self.avg_tiles_after,
             if self.avg_tiles_before > 0.0 {
-                ((self.avg_tiles_before - self.avg_tiles_after) / self.avg_tiles_before * 100.0)
-            } else { 0.0 });
-        println!("  Cache hits:       {} / {} tiles ({:.1}%)",
-            self.cache_hits, (self.avg_tiles_after * self.frames as f64) as usize, self.cache_hit_rate * 100.0);
+                (self.avg_tiles_before - self.avg_tiles_after) / self.avg_tiles_before * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "  Cache hits:       {} / {} tiles ({:.1}%)",
+            self.cache_hits,
+            (self.avg_tiles_after * self.frames as f64) as usize,
+            self.cache_hit_rate * 100.0
+        );
         println!("  Diff detection:   {:.2} ms", self.avg_diff_ms);
         println!("  Tile merging:     {:.2} ms", self.avg_merge_ms);
-        println!("  WebP encoding:    {:.2} ms ({} tiles encoded)", self.avg_encode_ms,
-            ((self.avg_tiles_after * self.frames as f64) as usize - self.cache_hits));
+        println!(
+            "  WebP encoding:    {:.2} ms ({} tiles encoded)",
+            self.avg_encode_ms,
+            ((self.avg_tiles_after * self.frames as f64) as usize - self.cache_hits)
+        );
         println!("  Overhead:         {:.2} ms", self.avg_overhead_ms);
         println!("  ─────────────────────────────");
-        println!("  TOTAL:            {:.2} ms  →  {:.0} FPS", self.avg_total_ms, self.fps);
+        println!(
+            "  TOTAL:            {:.2} ms  →  {:.0} FPS",
+            self.avg_total_ms, self.fps
+        );
     }
 }
 
-fn benchmark_scenario(config: &Config, scenario: &str, description: &str, frames: usize) -> ScenarioResult {
+fn benchmark_scenario(
+    config: &Config,
+    scenario: &str,
+    description: &str,
+    frames: usize,
+) -> ScenarioResult {
     let width = 1920u32;
     let height = 1080u32;
 
     let mut diff_detector = DiffDetector::new(config.clone());
     let tile_merger = TileMerger::new(config.merge_gap);
 
-    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
+    let grid = config.grid(width, height);
+    let (_tile_width, _tile_height, _tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
     // Baseline frame - створюємо реалістичний статичний фон
     let baseline = generate_scenario_frame(width, height, 0, scenario);
@@ -160,15 +186,7 @@ fn benchmark_scenario(config: &Config, scenario: &str, description: &str, frames
 
         // Tile merging
         let t1 = Instant::now();
-        let merged_tiles = tile_merger.merge(
-            &changed_tiles,
-            config.tiles_x,
-            tiles_y,
-            tile_width,
-            tile_height,
-            width,
-            height,
-        );
+        let merged_tiles = tile_merger.merge(&changed_tiles, &grid);
         total_merge_ms += t1.elapsed().as_secs_f64() * 1000.0;
 
         total_tiles_after += merged_tiles.len();
@@ -221,19 +239,25 @@ fn main() {
     println!("║              Average of 10 runs per scenario            ║");
     println!("╚══════════════════════════════════════════════════════════╝\n");
 
-    let mut config = Config::default();
-    config.debug_mode = false;  // Suppress debug output during benchmark
+    let config = Config::default(); // debug_mode is already false
 
     let tile_width = 1920 / config.tiles_x;
     let tile_height = tile_width * 1080 / 1920;
-    let tiles_y = (1080 + tile_height - 1) / tile_height;
+    let tiles_y = 1080_u32.div_ceil(tile_height);
 
     println!("Resolution: 1920x1080");
-    println!("Tiles: {}x{} ({}x{} px)", config.tiles_x, tiles_y, tile_width, tile_height);
+    println!(
+        "Tiles: {}x{} ({}x{} px)",
+        config.tiles_x, tiles_y, tile_width, tile_height
+    );
     println!("Merge gap: {}", config.merge_gap);
     println!("Frames per scenario: 100");
     println!("Runs per scenario: 10");
-    println!("Target FPS: {} (= {:.1} ms/frame)", config.target_fps.get(), 1000.0 / config.target_fps.get() as f64);
+    println!(
+        "Target FPS: {} (= {:.1} ms/frame)",
+        config.target_fps.get(),
+        1000.0 / config.target_fps.get() as f64
+    );
 
     let scenarios = vec![
         ("static", "Статичний контент (0-5 tiles)", "🟢"),
@@ -264,13 +288,21 @@ fn main() {
         let n_runs = run_results.len();
         let avg_diff_ms = run_results.iter().map(|r| r.avg_diff_ms).sum::<f64>() / n_runs as f64;
         let avg_merge_ms = run_results.iter().map(|r| r.avg_merge_ms).sum::<f64>() / n_runs as f64;
-        let avg_encode_ms = run_results.iter().map(|r| r.avg_encode_ms).sum::<f64>() / n_runs as f64;
-        let avg_overhead_ms = run_results.iter().map(|r| r.avg_overhead_ms).sum::<f64>() / n_runs as f64;
+        let avg_encode_ms =
+            run_results.iter().map(|r| r.avg_encode_ms).sum::<f64>() / n_runs as f64;
+        let avg_overhead_ms =
+            run_results.iter().map(|r| r.avg_overhead_ms).sum::<f64>() / n_runs as f64;
         let avg_total_ms = run_results.iter().map(|r| r.avg_total_ms).sum::<f64>() / n_runs as f64;
-        let avg_tiles_before = run_results.iter().map(|r| r.avg_tiles_before).sum::<f64>() / n_runs as f64;
-        let avg_tiles_after = run_results.iter().map(|r| r.avg_tiles_after).sum::<f64>() / n_runs as f64;
+        let avg_tiles_before =
+            run_results.iter().map(|r| r.avg_tiles_before).sum::<f64>() / n_runs as f64;
+        let avg_tiles_after =
+            run_results.iter().map(|r| r.avg_tiles_after).sum::<f64>() / n_runs as f64;
         let avg_cache_hits = run_results.iter().map(|r| r.cache_hits).sum::<usize>() / n_runs;
-        let total_tiles = run_results.iter().map(|r| (r.avg_tiles_after * r.frames as f64) as usize).sum::<usize>() / n_runs;
+        let total_tiles = run_results
+            .iter()
+            .map(|r| (r.avg_tiles_after * r.frames as f64) as usize)
+            .sum::<usize>()
+            / n_runs;
         let avg_cache_hit_rate = if total_tiles > 0 {
             avg_cache_hits as f64 / total_tiles as f64
         } else {
@@ -285,14 +317,29 @@ fn main() {
             0.0
         };
 
-        println!("  Avg tiles:        {:.1} → {:.1} ({:.1}% reduction)", avg_tiles_before, avg_tiles_after, reduction);
-        println!("  Cache hits:       {} / {} tiles ({:.1}%)", avg_cache_hits, total_tiles, avg_cache_hit_rate * 100.0);
+        println!(
+            "  Avg tiles:        {:.1} → {:.1} ({:.1}% reduction)",
+            avg_tiles_before, avg_tiles_after, reduction
+        );
+        println!(
+            "  Cache hits:       {} / {} tiles ({:.1}%)",
+            avg_cache_hits,
+            total_tiles,
+            avg_cache_hit_rate * 100.0
+        );
         println!("  Diff detection:   {:.2} ms", avg_diff_ms);
         println!("  Tile merging:     {:.2} ms", avg_merge_ms);
-        println!("  WebP encoding:    {:.2} ms ({} tiles encoded)", avg_encode_ms, total_tiles.saturating_sub(avg_cache_hits));
+        println!(
+            "  WebP encoding:    {:.2} ms ({} tiles encoded)",
+            avg_encode_ms,
+            total_tiles.saturating_sub(avg_cache_hits)
+        );
         println!("  Overhead:         {:.2} ms", avg_overhead_ms);
         println!("  ─────────────────────────────");
-        println!("  TOTAL:            {:.2} ms  →  {:.0} FPS", avg_total_ms, avg_fps);
+        println!(
+            "  TOTAL:            {:.2} ms  →  {:.0} FPS",
+            avg_total_ms, avg_fps
+        );
 
         // Store averaged result
         let avg_result = ScenarioResult {
@@ -327,17 +374,23 @@ fn main() {
             "⚠️ "
         };
         let emoji = scenarios[i].2;
-        println!("║ {} {} {:<25} {:.1} ms ({:.0} FPS) {}║",
+        println!(
+            "║ {} {} {:<25} {:.1} ms ({:.0} FPS) {}║",
             emoji,
             status,
             result.scenario,
             result.avg_total_ms,
             result.fps,
-            " ".repeat(10));
+            " ".repeat(10)
+        );
     }
 
     println!("╠═══════════════════════════════════════════════════════════════╣");
-    println!("║ Target: {:.1} ms/frame ({} FPS)                             ║", target_ms, config.target_fps.get());
+    println!(
+        "║ Target: {:.1} ms/frame ({} FPS)                             ║",
+        target_ms,
+        config.target_fps.get()
+    );
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
     println!("💡 Key insight:");

@@ -23,8 +23,10 @@ pipewire::PipeWireCapture      │                                  (stream.rs)
 - **Capture** (`capture/wlr.rs`, `capture/pipewire.rs`) produces `Frame { rgba, width, height, damage_regions }` on an `mpsc` channel. `capture/mod.rs` auto-detects wlr-screencopy (DMA-BUF, preferred on wlroots compositors) vs. PipeWire-via-portal (feature-gated, `GNOME`/`KDE`/X11).
 - **Diff** (`diff.rs`) hashes each grid tile, classifies it changed/unchanged/throttled, and decides which changed tiles to actually send this frame. See [Key algorithms](#key-algorithms).
 - **Merge** (`encoder.rs`) groups adjacent changed tiles into up to 4×4-cell rectangles.
-- **Priority + encode** (`stream.rs`, `encoding_pool.rs`) sorts merged tiles by priority, extracts pixels (`tile_extract.rs`), and encodes to WebP across a worker pool, with a per-tile cache for repeats.
-- **Transport** (`stream.rs`, `webrtc_connection.rs`, `signaling.rs`, `server.rs`) frames tiles into DataChannel packets with ACK tracking, and handles the WebSocket signaling handshake (SDP offer/answer, ICE candidates, token auth) with auto-reconnect.
+- **Priority + encode** (`pipeline.rs`, `encoding_pool.rs`) sorts merged tiles by priority, extracts pixels (`tile_extract.rs`), and encodes to WebP across a worker pool, with a per-tile cache for repeats. `Pipeline::process(&Frame) -> Option<EncodedFrame>` is the whole per-frame step, synchronous and unit-tested; it also owns the tile-grid epoch.
+- **Transport** (`transport.rs`, `protocol.rs`) frames an `EncodedFrame` into DataChannel packets; `AckTracker` records in-flight batches. `stream.rs` is the glue: it runs the pipeline on its own thread and the send loop as an async task, and routes lost cells back from one to the other.
+- **Signaling** (`server.rs`, `auth.rs`, `signaling.rs`, `webrtc_connection.rs`, `ice.rs`) — WebSocket upgrade, first-message token auth, a `hello` carrying the ICE server list and the control flag, then SDP offer/answer + ICE candidates, with auto-reconnect.
+- **Remote control** (`input.rs`, only with `--control`) — an `input` DataChannel feeds an injector thread with its own Wayland connection, which drives `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1`. `HeldState` tracks held keys/buttons to compute modifier state and release everything when the session ends.
 - **Client page** (`server.rs`) — `docs/client-examples/client.html` is embedded into the binary (`include_str!`) and served on any plain HTTP GET to the same port the WebSocket listens on, over the same TLS if configured. `handle_connection`/`handle_connection_tls` sniff the first bytes of a new connection to dispatch between a WebSocket upgrade and a static GET; the TLS path uses a small `PrefixedStream` wrapper to "un-consume" those sniffed bytes before handing the connection to the WebSocket upgrade, since (unlike a raw `TcpStream`) a generic TLS stream has no kernel-level `peek`.
 
 ## Configuration reference
@@ -39,17 +41,33 @@ The env vars and CLI flags in the [README](../README.md#configuration) cover eve
 | `webp_quality_low` / `webp_quality_high` | `1.0` / `10.0` | Used for dynamic vs. static tiles respectively. |
 | `merge_gap` | auto-tuned at startup | See [Tile merging](#tile-merging); `0` with `--no-adaptive`. |
 | `priority_frequency_weight` / `priority_speed_weight` / `priority_center_weight` | `0.5` / `0.3` / `0.2` | See [Priority scoring](#priority-scoring). |
-| `priority_history_window` | `30` | Currently unused — `TileMetadata`'s `CircularBuffer` change history is hardcoded to a 32-frame window (`tile.rs`'s `CircularBuffer::default()`), independent of this field. |
 | `static_tile_fps` / `dynamic_tile_fps` | `16` / `60` | Send-rate cap per tile mode — see [FPS throttling](#fps-throttling--adaptive-send-rate). |
 
 ## Wire protocol
 
-Binary messages over the WebRTC DataChannel, all little-endian:
+Signaling (WebSocket, JSON text frames), in order:
+
+1. client → `{"type":"auth","token":"…"}` — must be the first message, within 5 s. A wrong token gets close code `4001`.
+2. server → `{"type":"hello","version":"…","ice_servers":[{"urls":[…],"username":"…","credential":"…"}],"control":bool}` — `ice_servers` is in `RTCConfiguration.iceServers` shape.
+3. server → `{"type":"offer","sdp":"…","session":n}`, then `candidate`s; client → `answer` and its `candidate`s, all tagged with the same `session` (a stale session's messages are ignored).
+
+Binary messages over the `screen` DataChannel (unordered, reliable), all little-endian — `src/protocol.rs` is the server side, `client.html` the client side:
 
 1. **Header** (resolution change) — 6 bytes: `0xFFFF (u16) | width (u16) | height (u16)`.
 2. **Sequence control packet** (once per frame, before its tiles) — 10 bytes: `0xFFFE (u16) | seq (u32) | tile_count (u32)`. `tile_count` lets the client withhold its ACK until every tile in the batch is actually decoded, not just on marker receipt.
 3. **Tile data** — `tile_len (u32) | x (u16) | y (u16) | width (u16) | height (u16) | webp_bytes...`, packed back-to-back up to an 8000-byte packet; a tile that doesn't fit gets its own packet (length-prefixed the same way).
 4. **ACK** (client → server) — 4 bytes: `seq (u32)`. See [ACK-loss recovery](#ack-loss-recovery).
+
+The `input` DataChannel (ordered, reliable; only with `--control`) carries one client → server event per message:
+
+| type | layout | notes |
+|---|---|---|
+| `0x01` motion | `x u16 \| y u16` | normalised: 0 = left/top edge of the streamed output, 65535 = right/bottom |
+| `0x02` button | `button u8 \| pressed u8` | `MouseEvent.button` numbering (0 left, 1 middle, 2 right, 3 back, 4 forward) |
+| `0x03` wheel | `dx i16 \| dy i16` | pixels; ~100 per notch |
+| `0x04` key | `code u16 \| pressed u8` | Linux evdev keycode (client maps from `KeyboardEvent.code`) |
+
+Malformed events are dropped (`InputEvent::decode` returns `None`).
 
 The current framing/decoding is implemented once, in `docs/client-examples/client.html` — that's the source of truth for the client side; this list is for writing a new client from scratch.
 
@@ -70,6 +88,9 @@ A tile is "dynamic" if its hash changed on both of the last two frames (`prev_pr
 ### Priority scoring
 Tiles queued for sending are sorted highest-priority-first: `frequency_score × priority_frequency_weight + change_speed × priority_speed_weight + center_score × priority_center_weight`, where frequency comes from the `CircularBuffer` change history, change_speed is the popcount of the tile's last hash XOR-diff, and center_score favors tiles closer to the screen's center.
 
+### Bandwidth adaptation
+`BandwidthController` (`bandwidth.rs`) samples the DataChannel's `bufferedAmount` on every send-loop tick (every `ACK_POLL` = 50 ms, and on every frame) and derives a quality-scale multiplier in `[0.3, 1.0]`: above a 256 KiB high watermark it backs off by 0.15 immediately; below a 32 KiB low watermark it recovers by 0.05 only after 3 consecutive clear samples (recovery is deliberately slower than backoff, so a link oscillating around the watermark trends down rather than thrashing). The scale is written to a shared `AtomicU32` (an f32's bit pattern — the pipeline reads it on its own thread, once per frame) and multiplies `webp_quality_low`/`webp_quality_high` in `diff.rs`'s quality assignment, clamped to fast_webp's valid `0.0..=100.0` range. Pure and fully unit-tested independent of any real DataChannel.
+
 ### Per-tile encode cache
 Each single-cell tile's last WebP encode is cached, keyed by its content hash — a tile re-selected for sending without its pixels changing (e.g. by the periodic quality refresh below) skips extraction and encoding entirely. Restricted to single-cell tiles: a merged multi-cell tile's cache key only covers its one representative cell's hash, so applying the same shortcut to the whole merged region could serve stale bytes for a *different* cell that did change (the bug fixed across v0.299.1/v0.299.2).
 
@@ -77,7 +98,7 @@ Each single-cell tile's last WebP encode is cached, keyed by its content hash �
 Every second, `invalidate_cache` resets tiles that were last sent at low ("dynamic") quality, forcing a high-quality re-encode next time they're selected — catches a tile that stopped moving right after being sent at throttled quality.
 
 ### ACK-loss recovery
-Each frame's DataChannel messages carry a sequence number; the client ACKs once every tile in that batch is decoded. If 150ms pass with no ACK, every grid cell the frame's tiles covered (`Tile::covered_indices` — all cells of a merged tile, not just its representative one) is queued and, on the processing thread's next iteration, passed to `invalidate_tiles`. That resets the tile's hash baseline, cached encode, and sets its `force_redetect` flag, forcing it to be re-sent on the next frame regardless of whether its pixels actually changed. A resolution change bumps an epoch counter; queued indices carry the epoch they were produced under and are dropped rather than applied if it's since changed, so a resize mid-flight can't misapply stale indices to the new tile grid.
+Each frame's DataChannel messages carry a sequence number; the client ACKs once every tile in that batch is decoded. If 150ms pass with no ACK (checked on every frame *and* on a 50 ms timer, so a loss right before the screen goes static is still caught), every grid cell the frame's tiles covered (`Tile::covered_indices` — all cells of a merged tile, not just its representative one) is queued and, on the processing thread's next iteration, passed to `invalidate_tiles`. That resets the tile's hash baseline, cached encode, and sets its `force_redetect` flag, forcing it to be re-sent on the next frame regardless of whether its pixels actually changed. A resolution change bumps the pipeline's epoch; lost cells travel back tagged with the epoch they were produced under, and `Pipeline::invalidate` drops them if it has since changed, so a resize mid-flight can't misapply stale indices to the new tile grid.
 
 ## Benchmarking & profiling
 

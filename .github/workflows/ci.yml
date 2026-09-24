@@ -22,13 +22,17 @@ jobs:
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        continue-on-error: true
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build (default features)
         run: cargo build --release
@@ -37,6 +41,10 @@ jobs:
         run: |
           sudo apt-get install -y libpipewire-0.3-dev libdbus-1-dev
           cargo build --release --features pipewire_capture
+          cargo clippy --features pipewire_capture --all-targets -- -D warnings
 
       - name: Run tests
         run: cargo test --release
+
+      - name: Client input-capture test
+        run: node docs/client-examples/input-capture.test.js

@@ -1,4 +1,3 @@
-
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 #[cfg(not(target_arch = "x86_64"))]
@@ -27,22 +26,22 @@ impl SimdLevel {
     }
 }
 
-// Thread-local buffer для bulk hashing (уникає allocations)
+// Thread-local buffer for bulk hashing (avoids allocations)
 thread_local! {
     static HASH_BUFFER: std::cell::RefCell<Vec<u8>> = std::cell::RefCell::new(Vec::with_capacity(256 * 256 * 4));
 }
 
-// Adaptive hash function з runtime SIMD detection
+// Adaptive hash function with runtime SIMD detection
 pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_width: u32) -> u64 {
-    // Optimization #4: Bulk hashing - один update замість багатьох
-    // Якщо tile повної ширини - можемо хешувати напряму
+    // Optimization #4: Bulk hashing - one update instead of many
+    // If tile is full width, we can hash directly
     if width == frame_width {
         let offset = (y * frame_width * 4) as usize;
         let len = (width * height * 4) as usize;
         return hash_contiguous(&rgba[offset..offset + len]);
     }
 
-    // Інакше копіюємо в contiguous buffer
+    // Otherwise copy into contiguous buffer
     HASH_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
         let tile_size = (width * height * 4) as usize;
@@ -51,7 +50,7 @@ pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_wid
             buf.resize(tile_size, 0);
         }
 
-        // Копіюємо tile рядок за рядком
+        // Copy tile row by row
         for row in 0..height {
             let src_offset = (((y + row) * frame_width + x) * 4) as usize;
             let dst_offset = (row * width * 4) as usize;
@@ -63,18 +62,25 @@ pub fn hash_tile(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_wid
     })
 }
 
-pub fn hash_tile_half(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, frame_width: u32) -> u64 {
-    // Optimization #4: Bulk hashing для half hash
+pub fn hash_tile_half(
+    rgba: &[u8],
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    frame_width: u32,
+) -> u64 {
+    // Optimization #4: Bulk hashing for half hash
     HASH_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
-        let rows = (height + 1) / 2;
+        let rows = height.div_ceil(2);
         let tile_size = (width * rows * 4) as usize;
 
         if buf.len() < tile_size {
             buf.resize(tile_size, 0);
         }
 
-        // Копіюємо кожен 2-й рядок
+        // Copy every second row
         let mut dst_row = 0;
         let mut src_row = y;
         while src_row < y + height {
@@ -90,7 +96,7 @@ pub fn hash_tile_half(rgba: &[u8], x: u32, y: u32, width: u32, height: u32, fram
     })
 }
 
-// Optimization #1: AVX2 хешування для contiguous data
+// Optimization #1: AVX2 hashing for contiguous data
 #[inline]
 fn hash_contiguous(data: &[u8]) -> u64 {
     #[cfg(target_arch = "x86_64")]
@@ -100,7 +106,7 @@ fn hash_contiguous(data: &[u8]) -> u64 {
             return unsafe { hash_avx2(data) };
         }
         // SSE2 fallback (always available on x86_64)
-        return unsafe { hash_sse2(data) };
+        unsafe { hash_sse2(data) }
     }
 
     // Non-x86_64 architectures (ARM, RISC-V, etc.)
@@ -148,7 +154,7 @@ fn fold_lanes(lanes: &[u64], len: u64) -> u64 {
     h
 }
 
-// AVX2 implementation (256-bit, процесує 32 байти за раз)
+// AVX2 implementation (256-bit, processes 32 bytes at a time)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hash_avx2(data: &[u8]) -> u64 {
@@ -166,8 +172,7 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
         SEED_LANE_0 as i64,
     );
 
-    let chunks = data.chunks_exact(32);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<32>();
 
     for chunk in chunks {
         let v = _mm256_loadu_si256(chunk.as_ptr() as *const __m256i);
@@ -207,7 +212,7 @@ unsafe fn hash_avx2(data: &[u8]) -> u64 {
     fold_lanes(&lanes, data.len() as u64)
 }
 
-// SSE2 implementation (128-bit, процесує 16 байтів за раз)
+// SSE2 implementation (128-bit, processes 16 bytes at a time)
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn hash_sse2(data: &[u8]) -> u64 {
@@ -215,8 +220,7 @@ unsafe fn hash_sse2(data: &[u8]) -> u64 {
     let mut seed = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
     let seed_inc = _mm_set_epi64x(SEED_LANE_1 as i64, SEED_LANE_0 as i64);
 
-    let chunks = data.chunks_exact(16);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = data.as_chunks::<16>();
 
     for chunk in chunks {
         let v = _mm_loadu_si128(chunk.as_ptr() as *const __m128i);
@@ -246,7 +250,7 @@ unsafe fn hash_sse2(data: &[u8]) -> u64 {
     fold_lanes(&lanes, data.len() as u64)
 }
 
-// Scalar fallback (для систем без SIMD - non-x86_64 architectures)
+// Scalar fallback (for systems without SIMD - non-x86_64 architectures)
 #[cfg(not(target_arch = "x86_64"))]
 fn hash_scalar(data: &[u8]) -> u64 {
     let mut hasher = Xxh3::new();
@@ -254,125 +258,73 @@ fn hash_scalar(data: &[u8]) -> u64 {
     hasher.digest()
 }
 
-/// SIMD Batch Operations для diff detection
-#[cfg(target_arch = "x86_64")]
-pub mod simd_batch {
-    use core::arch::x86_64::*;
-
-    /// Compare two arrays of u64 hashes and return indices where they differ
-    /// Uses AVX2 to compare 4 hashes at once
-    #[target_feature(enable = "avx2")]
-    pub unsafe fn find_changed_tiles_avx2(
-        prev: &[u64],
-        new: &[u64],
-    ) -> Vec<usize> {
-        assert_eq!(prev.len(), new.len());
-        let mut changed = Vec::new();
-
-        let chunks = prev.len() / 4;
-        let remainder = prev.len() % 4;
-
-        // Process 4 hashes at once with AVX2
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 4;
-
-            let prev_vec = _mm256_loadu_si256(prev[offset..].as_ptr() as *const __m256i);
-            let new_vec = _mm256_loadu_si256(new[offset..].as_ptr() as *const __m256i);
-
-            // Compare for equality
-            let cmp = _mm256_cmpeq_epi64(prev_vec, new_vec);
-
-            // Extract comparison mask
-            let mask = _mm256_movemask_pd(_mm256_castsi256_pd(cmp));
-
-            // Check each of 4 comparison results
-            for bit in 0..4 {
-                if (mask & (1 << bit)) == 0 {
-                    // Not equal - hash changed
-                    changed.push(offset + bit);
-                }
-            }
-        }
-
-        // Handle remainder (scalar fallback)
-        for i in (chunks * 4)..(chunks * 4 + remainder) {
-            if prev[i] != new[i] {
-                changed.push(i);
-            }
-        }
-
-        changed
-    }
-
-    /// Scalar fallback for find_changed_tiles
-    pub fn find_changed_tiles_scalar(prev: &[u64], new: &[u64]) -> Vec<usize> {
-        prev.iter()
-            .zip(new.iter())
-            .enumerate()
-            .filter_map(|(i, (p, n))| if p != n { Some(i) } else { None })
-            .collect()
-    }
-
-    /// Increment array of u32 counters by 1 using AVX2
-    /// Processes 8 counters at once
-    #[target_feature(enable = "avx2")]
-    pub unsafe fn increment_counters_avx2(counters: &mut [u32]) {
-        let one = _mm256_set1_epi32(1);
-
-        let chunks = counters.len() / 8;
-        let remainder = counters.len() % 8;
-
-        // Process 8 counters at once
-        for chunk_idx in 0..chunks {
-            let offset = chunk_idx * 8;
-            let ptr = counters[offset..].as_ptr() as *const __m256i;
-
-            let vals = _mm256_loadu_si256(ptr);
-            let incremented = _mm256_add_epi32(vals, one);
-
-            let out_ptr = counters[offset..].as_mut_ptr() as *mut __m256i;
-            _mm256_storeu_si256(out_ptr, incremented);
-        }
-
-        // Handle remainder (scalar)
-        for i in (chunks * 8)..(chunks * 8 + remainder) {
-            counters[i] += 1;
-        }
-    }
+/// The tile grid laid over one frame: `tiles_x` columns of `tile_width`
+/// pixels and `tiles_y` rows of `tile_height`. Tiles keep the frame's aspect
+/// ratio, so the frame rarely divides evenly — the last column and row
+/// absorb the remainder (see [`Grid::x_span`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grid {
+    pub tiles_x: u32,
+    pub tiles_y: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub frame_width: u32,
+    pub frame_height: u32,
 }
 
-/// Public API for SIMD batch operations (with runtime detection)
-pub fn find_changed_tiles(prev: &[u64], new: &[u64]) -> Vec<usize> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { simd_batch::find_changed_tiles_avx2(prev, new) };
+impl Grid {
+    /// `tiles_x` columns over a `frame_width`×`frame_height` frame. Degenerate
+    /// sizes (narrower than `tiles_x`, extreme aspect ratios) are clamped to
+    /// at least one pixel per tile instead of dividing by zero.
+    pub fn new(tiles_x: u32, frame_width: u32, frame_height: u32) -> Self {
+        let frame_width = frame_width.max(1);
+        let frame_height = frame_height.max(1);
+        let tiles_x = tiles_x.clamp(1, frame_width);
+        let tile_width = frame_width / tiles_x;
+        let tile_height = (tile_width * frame_height / frame_width).max(1);
+        Self {
+            tiles_x,
+            tiles_y: frame_height.div_ceil(tile_height),
+            tile_width,
+            tile_height,
+            frame_width,
+            frame_height,
         }
     }
 
-    // Scalar fallback
-    #[cfg(target_arch = "x86_64")]
-    return simd_batch::find_changed_tiles_scalar(prev, new);
-
-    #[cfg(not(target_arch = "x86_64"))]
-    prev.iter()
-        .zip(new.iter())
-        .enumerate()
-        .filter_map(|(i, (p, n))| if p != n { Some(i) } else { None })
-        .collect()
-}
-
-pub fn increment_unchanged_counters(counters: &mut [u32]) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { simd_batch::increment_counters_avx2(counters) };
-        }
+    pub fn cell_count(&self) -> usize {
+        (self.tiles_x * self.tiles_y) as usize
     }
 
-    // Scalar fallback
-    for counter in counters.iter_mut() {
-        *counter += 1;
+    /// Pixel range `[start, end)` covered by columns `tx_start..=tx_end`. The
+    /// last column extends to the frame's right edge: with 1366 px and 20
+    /// columns of 68 px, it's 74 px wide — otherwise the rightmost 6 px would
+    /// belong to no tile and never update.
+    pub fn x_span(&self, tx_start: u32, tx_end: u32) -> (u32, u32) {
+        let end = if tx_end + 1 >= self.tiles_x {
+            self.frame_width
+        } else {
+            (tx_end + 1) * self.tile_width
+        };
+        (tx_start * self.tile_width, end)
+    }
+
+    /// Row counterpart of [`x_span`](Self::x_span).
+    pub fn y_span(&self, ty_start: u32, ty_end: u32) -> (u32, u32) {
+        let end = if ty_end + 1 >= self.tiles_y {
+            self.frame_height
+        } else {
+            ((ty_end + 1) * self.tile_height).min(self.frame_height)
+        };
+        (ty_start * self.tile_height, end)
+    }
+
+    /// Pixel rect `(x, y, width, height)` of grid cell `index` (row-major).
+    pub fn cell_rect(&self, index: usize) -> (u32, u32, u32, u32) {
+        let (tx, ty) = (index as u32 % self.tiles_x, index as u32 / self.tiles_x);
+        let (x0, x1) = self.x_span(tx, tx);
+        let (y0, y1) = self.y_span(ty, ty);
+        (x0, y0, x1 - x0, y1 - y0)
     }
 }
 
@@ -387,7 +339,13 @@ pub struct Tile {
 
 impl Tile {
     pub fn new(x: u32, y: u32, width: u32, height: u32, quality: f32) -> Self {
-        Self { x, y, width, height, quality }
+        Self {
+            x,
+            y,
+            width,
+            height,
+            quality,
+        }
     }
 
     pub fn distance_from_center(&self, center_x: u32, center_y: u32) -> i32 {
@@ -404,11 +362,11 @@ impl Tile {
     /// this math — it used to be hand-copied independently in stream.rs and
     /// frame_profiler.rs, which is exactly how the post-merge indexing bugs
     /// fixed in v0.299.1 happened.
-    pub fn grid_bounds(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> (u32, u32, u32, u32) {
-        let start_tx = self.x / tile_width;
-        let start_ty = self.y / tile_height;
-        let end_tx = ((self.x + self.width - 1) / tile_width).min(tiles_x - 1);
-        let end_ty = ((self.y + self.height - 1) / tile_height).min(tiles_y - 1);
+    pub fn grid_bounds(&self, grid: &Grid) -> (u32, u32, u32, u32) {
+        let start_tx = self.x / grid.tile_width;
+        let start_ty = self.y / grid.tile_height;
+        let end_tx = ((self.x + self.width - 1) / grid.tile_width).min(grid.tiles_x - 1);
+        let end_ty = ((self.y + self.height - 1) / grid.tile_height).min(grid.tiles_y - 1);
         (start_tx, start_ty, end_tx, end_ty)
     }
 
@@ -418,38 +376,38 @@ impl Tile {
     /// is needed (e.g. ACK-loss recovery), and `is_single_cell` before
     /// treating this index as uniquely identifying the tile's whole area
     /// (e.g. per-tile encode caching).
-    pub fn representative_index(&self, tile_width: u32, tile_height: u32, tiles_x: u32) -> usize {
-        (self.y / tile_height * tiles_x + self.x / tile_width) as usize
+    pub fn representative_index(&self, grid: &Grid) -> usize {
+        (self.y / grid.tile_height * grid.tiles_x + self.x / grid.tile_width) as usize
     }
 
     /// Whether this tile covers exactly one grid cell (i.e. wasn't merged
     /// with neighbors). Only single-cell tiles can be safely cached/recovered
     /// by their representative index alone.
-    pub fn is_single_cell(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> bool {
-        let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
+    pub fn is_single_cell(&self, grid: &Grid) -> bool {
+        let (stx, sty, etx, ety) = self.grid_bounds(grid);
         stx == etx && sty == ety
     }
 
     /// Every grid-cell index this tile covers (one entry for a single-cell
     /// tile, up to `MAX_MERGE_TILES_X * MAX_MERGE_TILES_Y` for a merged one).
-    pub fn covered_indices(&self, tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> Vec<usize> {
-        let (stx, sty, etx, ety) = self.grid_bounds(tile_width, tile_height, tiles_x, tiles_y);
+    pub fn covered_indices(&self, grid: &Grid) -> Vec<usize> {
+        let (stx, sty, etx, ety) = self.grid_bounds(grid);
         let mut indices = Vec::with_capacity(((etx - stx + 1) * (ety - sty + 1)) as usize);
         for ty in sty..=ety {
             for tx in stx..=etx {
-                indices.push((ty * tiles_x + tx) as usize);
+                indices.push((ty * grid.tiles_x + tx) as usize);
             }
         }
         indices
     }
 }
 
-// Circular buffer для change history (замість VecDeque для кращої performance)
+// Circular buffer for change history (instead of VecDeque for better performance)
 #[derive(Clone, Debug)]
 pub struct CircularBuffer {
-    data: u64,  // Bitfield для 64 frames історії (true/false = 1/0 bit)
-    size: u8,   // Поточна кількість елементів
-    capacity: u8, // Максимальна місткість (обмежена 64)
+    data: u64,    // Bitfield for 64 frames history (true/false = 1/0 bit)
+    size: u8,     // Current number of elements
+    capacity: u8, // Maximum capacity (limited to 64)
 }
 
 impl CircularBuffer {
@@ -501,17 +459,17 @@ impl CircularBuffer {
 
 impl Default for CircularBuffer {
     fn default() -> Self {
-        Self::new(32)  // Default history window
+        Self::new(32) // Default history window
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TileMetadata {
     pub unchanged_frames: u32,
     pub last_sent_frame: u64,
     pub is_dynamic: bool,
     pub last_sent_as_dynamic: bool,
-    pub change_history: CircularBuffer,  // Замінили VecDeque на CircularBuffer
+    pub change_history: CircularBuffer, // Replaced VecDeque with CircularBuffer
     pub last_hash_diff: u64,
     pub prev_half_hash: u64,
 
@@ -528,72 +486,106 @@ impl TileMetadata {
     }
 }
 
-impl Default for TileMetadata {
-    fn default() -> Self {
-        Self {
-            unchanged_frames: 0,
-            last_sent_frame: 0,
-            is_dynamic: false,
-            last_sent_as_dynamic: false,
-            change_history: CircularBuffer::default(),
-            last_hash_diff: 0,
-            prev_half_hash: 0,
-            cached_encoded: None,
-            cached_hash: 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Grid with the given cell size and cell counts (frame = exact multiple).
+    fn g(tile_width: u32, tile_height: u32, tiles_x: u32, tiles_y: u32) -> Grid {
+        Grid {
+            tiles_x,
+            tiles_y,
+            tile_width,
+            tile_height,
+            frame_width: tile_width * tiles_x,
+            frame_height: tile_height * tiles_y,
+        }
+    }
+
+    #[test]
+    fn grid_matches_the_old_tile_dimensions_on_1080p() {
+        let grid = Grid::new(20, 1920, 1080);
+        assert_eq!(
+            (grid.tile_width, grid.tile_height, grid.tiles_y),
+            (96, 54, 20)
+        );
+        assert_eq!(grid.cell_count(), 400);
+    }
+
+    #[test]
+    fn last_column_and_row_reach_the_frame_edge() {
+        let grid = Grid::new(20, 1366, 768); // 68 px columns, 1360 px would leave 6 px uncovered
+        assert_eq!(grid.x_span(19, 19), (1292, 1366));
+        assert_eq!(grid.x_span(16, 19), (1088, 1366));
+        assert_eq!(grid.x_span(0, 3), (0, 272));
+        let last = grid.cell_count() - 1;
+        let (x, y, w, h) = grid.cell_rect(last);
+        assert_eq!((x + w, y + h), (1366, 768));
+        let covered: u64 = (0..grid.cell_count())
+            .map(|i| {
+                let (_, _, w, h) = grid.cell_rect(i);
+                u64::from(w) * u64::from(h)
+            })
+            .sum();
+        assert_eq!(covered, 1366 * 768, "cells tile the frame exactly");
+    }
+
+    #[test]
+    fn degenerate_frames_do_not_divide_by_zero() {
+        for (w, h) in [(5, 5), (1, 1), (0, 0), (4000, 1), (1, 4000)] {
+            let grid = Grid::new(20, w, h);
+            assert!(grid.tile_width >= 1 && grid.tile_height >= 1, "{w}x{h}");
+            let (x, y, cw, ch) = grid.cell_rect(grid.cell_count() - 1);
+            assert_eq!((x + cw, y + ch), (w.max(1), h.max(1)), "{w}x{h}");
+        }
+    }
+
     #[test]
     fn grid_bounds_single_cell() {
         let tile = Tile::new(40, 20, 20, 10, 5.0);
-        assert_eq!(tile.grid_bounds(20, 10, 10, 10), (2, 2, 2, 2));
+        assert_eq!(tile.grid_bounds(&g(20, 10, 10, 10)), (2, 2, 2, 2));
     }
 
     #[test]
     fn grid_bounds_merged_region() {
         let tile = Tile::new(20, 10, 40, 20, 5.0); // 2x2 cells starting at (1,1)
-        assert_eq!(tile.grid_bounds(20, 10, 10, 10), (1, 1, 2, 2));
+        assert_eq!(tile.grid_bounds(&g(20, 10, 10, 10)), (1, 1, 2, 2));
     }
 
     #[test]
     fn grid_bounds_clamps_to_grid_edge() {
         let tile = Tile::new(0, 0, 1000, 1000, 5.0);
-        assert_eq!(tile.grid_bounds(20, 10, 5, 5), (0, 0, 4, 4));
+        assert_eq!(tile.grid_bounds(&g(20, 10, 5, 5)), (0, 0, 4, 4));
     }
 
     #[test]
     fn representative_index_is_top_left_cell() {
         let tile = Tile::new(40, 20, 20, 10, 5.0);
-        assert_eq!(tile.representative_index(20, 10, 10), 22); // ty=2, tx=2 -> 2*10+2
+        assert_eq!(tile.representative_index(&g(20, 10, 10, 100)), 22); // ty=2, tx=2 -> 2*10+2
     }
 
     #[test]
     fn is_single_cell_true_for_unmerged_tile() {
         let tile = Tile::new(20, 10, 20, 10, 5.0);
-        assert!(tile.is_single_cell(20, 10, 10, 10));
+        assert!(tile.is_single_cell(&g(20, 10, 10, 10)));
     }
 
     #[test]
     fn is_single_cell_false_for_merged_tile() {
         let tile = Tile::new(20, 10, 40, 20, 5.0);
-        assert!(!tile.is_single_cell(20, 10, 10, 10));
+        assert!(!tile.is_single_cell(&g(20, 10, 10, 10)));
     }
 
     #[test]
     fn covered_indices_single_cell_has_one_entry() {
         let tile = Tile::new(20, 10, 20, 10, 5.0);
-        assert_eq!(tile.covered_indices(20, 10, 10, 10), vec![11]); // ty=1,tx=1 -> 1*10+1
+        assert_eq!(tile.covered_indices(&g(20, 10, 10, 10)), vec![11]); // ty=1,tx=1 -> 1*10+1
     }
 
     #[test]
     fn covered_indices_matches_every_cell_in_a_merged_region() {
         let tile = Tile::new(20, 10, 40, 20, 5.0); // covers (1,1),(2,1),(1,2),(2,2)
-        let mut indices = tile.covered_indices(20, 10, 10, 10);
+        let mut indices = tile.covered_indices(&g(20, 10, 10, 10));
         indices.sort_unstable();
         assert_eq!(indices, vec![11, 12, 21, 22]);
     }
@@ -602,7 +594,7 @@ mod tests {
     fn covered_indices_matches_max_merge_region_size() {
         // 4x4 grid cells (the largest a single TileMerger output can span)
         let tile = Tile::new(0, 0, 80, 40, 5.0);
-        assert_eq!(tile.covered_indices(20, 10, 10, 10).len(), 16);
+        assert_eq!(tile.covered_indices(&g(20, 10, 10, 10)).len(), 16);
     }
 
     #[test]
@@ -773,24 +765,5 @@ mod tests {
         rgba[0] = 255; // row 0 is always sampled
         let after = hash_tile_half(&rgba, 0, 0, width, height, width);
         assert_ne!(before, after);
-    }
-
-    #[test]
-    fn find_changed_tiles_matches_expected_indices() {
-        let prev = vec![1u64, 2, 3, 4, 5, 6, 7, 8, 9];
-        let mut new = prev.clone();
-        new[2] = 99;
-        new[7] = 100;
-        let mut changed = find_changed_tiles(&prev, &new);
-        changed.sort_unstable();
-        assert_eq!(changed, vec![2, 7]);
-    }
-
-    #[test]
-    fn increment_unchanged_counters_increments_every_element() {
-        // 9 elements to exercise both the AVX2 8-wide path and its remainder.
-        let mut counters = vec![0u32, 5, 10, 63, 64, 100, 1000, 2, 3];
-        increment_unchanged_counters(&mut counters);
-        assert_eq!(counters, vec![1, 6, 11, 64, 65, 101, 1001, 3, 4]);
     }
 }

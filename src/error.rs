@@ -18,15 +18,15 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wayland(e) => write!(f, "Wayland: {e}"),
-            Self::NoScreencopyManager => write!(f, "zwlr_screencopy_manager_v1 не знайдено"),
-            Self::NoOutput => write!(f, "wl_output не знайдено"),
-            Self::FrameFailed => write!(f, "захоплення кадру провалилось"),
+            Self::NoScreencopyManager => write!(f, "zwlr_screencopy_manager_v1 not found"),
+            Self::NoOutput => write!(f, "wl_output not found"),
+            Self::FrameFailed => write!(f, "frame capture failed"),
             Self::WebRTC(e) => write!(f, "WebRTC: {e}"),
             Self::Io(e) => write!(f, "IO: {e}"),
             Self::DmaBuf(e) => write!(f, "DMA-BUF: {e}"),
             Self::PipeWire(e) => write!(f, "PipeWire: {e}"),
-            Self::ConsumerDisconnected => write!(f, "приймач кадрів відключився"),
-            Self::NoBackend => write!(f, "немає доступного бекенду захоплення"),
+            Self::ConsumerDisconnected => write!(f, "frame consumer disconnected"),
+            Self::NoBackend => write!(f, "no capture backend available"),
         }
     }
 }

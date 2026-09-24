@@ -1,14 +1,14 @@
 // WebRTC Signaling Module
 // Handles WebSocket-based signaling for WebRTC connection establishment
 
-use crate::error::{Result, Error};
-use tokio_tungstenite::tungstenite::Message;
-use tokio::sync::mpsc;
+use crate::error::{Error, Result};
 use futures_util::StreamExt;
-use webrtc::peer_connection::RTCPeerConnection;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Message;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+use webrtc::peer_connection::RTCPeerConnection;
 
 pub struct SignalingChannel {
     ws_tx: mpsc::Sender<Message>,
@@ -26,13 +26,19 @@ impl SignalingChannel {
     /// Send offer through WebSocket, then start forwarding ICE candidates.
     /// `session` tags this negotiation attempt so late-arriving answer/candidate
     /// messages from an abandoned attempt can be told apart from the current one.
-    pub async fn send_offer_and_start_forwarding(mut self, sdp: String, session: u64) -> Result<()> {
+    pub async fn send_offer_and_start_forwarding(
+        mut self,
+        sdp: String,
+        session: u64,
+    ) -> Result<()> {
         let offer_json = serde_json::json!({
             "type": "offer",
             "sdp": sdp,
             "session": session
         });
-        self.ws_tx.send(Message::Text(offer_json.to_string())).await
+        self.ws_tx
+            .send(Message::Text(offer_json.to_string()))
+            .await
             .map_err(|_| Error::WebRTC("Failed to send offer (channel full or closed)".into()))?;
 
         // Start ICE forwarding in background
@@ -41,7 +47,7 @@ impl SignalingChannel {
                 let candidate_str = match candidate.to_json() {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Failed to serialize ICE candidate, skipping: {}", e);
+                        log::warn!("Failed to serialize ICE candidate, skipping: {}", e);
                         continue;
                     }
                 };
@@ -50,11 +56,16 @@ impl SignalingChannel {
                     "candidate": candidate_str,
                     "session": session
                 });
-                if self.ws_tx.send(Message::Text(candidate_json.to_string())).await.is_err() {
-                    eprintln!("Failed to send ICE candidate (channel full or closed)");
+                if self
+                    .ws_tx
+                    .send(Message::Text(candidate_json.to_string()))
+                    .await
+                    .is_err()
+                {
+                    log::error!("Failed to send ICE candidate (channel full or closed)");
                     break;
                 }
-                println!("Sent ICE candidate to client");
+                log::debug!("Sent ICE candidate to client");
             }
         });
 
@@ -89,7 +100,8 @@ where
     // rejects them with "remote description is not set". Buffer any
     // candidate that arrives before the answer, then apply them all once the
     // remote description is actually set.
-    let mut pending_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit> = Vec::new();
+    let mut pending_candidates: Vec<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit> =
+        Vec::new();
 
     while tokio::time::Instant::now() < deadline {
         tokio::select! {
@@ -99,20 +111,20 @@ where
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
                             let msg_session = json.get("session").and_then(|v| v.as_u64());
                             if msg_session != Some(session) {
-                                println!("Ignoring stale signaling message from session {:?} (current: {session})", msg_session);
+                                log::debug!("Ignoring stale signaling message from session {:?} (current: {session})", msg_session);
                                 continue;
                             }
                             if json.get("type").and_then(|v| v.as_str()) == Some("answer") {
                                 if let Some(sdp) = json.get("sdp").and_then(|v| v.as_str()) {
-                                    println!("Got answer");
+                                    log::info!("Got answer");
                                     let answer = RTCSessionDescription::answer(sdp.to_owned())?;
                                     peer_connection.set_remote_description(answer).await?;
 
                                     for candidate_init in pending_candidates.drain(..) {
                                         if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
-                                            eprintln!("Failed to add buffered ICE candidate: {}", e);
+                                            log::warn!("Failed to add buffered ICE candidate: {}", e);
                                         } else {
-                                            println!("Added buffered ICE candidate from client");
+                                            log::debug!("Added buffered ICE candidate from client");
                                         }
                                     }
                                     return Ok(true);
@@ -120,14 +132,14 @@ where
                             } else if json.get("type").and_then(|v| v.as_str()) == Some("candidate") {
                                 // Handle ICE candidates from client
                                 if let Some(candidate_obj) = json.get("candidate") {
-                                    println!("Remote ICE candidate: {}", candidate_obj);
+                                    log::debug!("Remote ICE candidate: {}", candidate_obj);
                                     if let Ok(candidate_init) = serde_json::from_value::<webrtc::ice_transport::ice_candidate::RTCIceCandidateInit>(candidate_obj.clone()) {
                                         if peer_connection.remote_description().await.is_none() {
                                             pending_candidates.push(candidate_init);
                                         } else if let Err(e) = peer_connection.add_ice_candidate(candidate_init).await {
-                                            eprintln!("Failed to add ICE candidate: {}", e);
+                                            log::warn!("Failed to add ICE candidate: {}", e);
                                         } else {
-                                            println!("Added ICE candidate from client");
+                                            log::debug!("Added ICE candidate from client");
                                         }
                                     }
                                 }
@@ -135,11 +147,11 @@ where
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        println!("WebSocket closed");
+                        log::info!("WebSocket closed");
                         return Ok(false);
                     }
                     Some(Err(e)) => {
-                        eprintln!("WebSocket error: {}", e);
+                        log::error!("WebSocket error: {}", e);
                         return Ok(false);
                     }
                     None => return Ok(false),

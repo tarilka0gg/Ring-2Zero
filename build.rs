@@ -12,11 +12,16 @@ fn main() {
             .expect("dbus-1 not found (install libdbus-1-dev / dbus-devel)");
 
         let mut build = cc::Build::new();
-        build.file("src_c/pw_capture.c")
+        build
+            .file("src_c/pw_capture.c")
             .flag("-fno-strict-aliasing")
             .flag("-fno-strict-overflow");
 
-        for path in pipewire.include_paths.iter().chain(dbus.include_paths.iter()) {
+        for path in pipewire
+            .include_paths
+            .iter()
+            .chain(dbus.include_paths.iter())
+        {
             build.include(path);
         }
 

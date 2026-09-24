@@ -1,9 +1,10 @@
 <!DOCTYPE html>
 <html lang="uk">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta charset="UTF-8">
 <title>Ring-2Zero</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='4' width='20' height='13' rx='2' fill='none' stroke='%23af3a03' stroke-width='2'/%3E%3Cline x1='8' y1='21' x2='16' y2='21' stroke='%23af3a03' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='12' y1='17' x2='12' y2='21' stroke='%23af3a03' stroke-width='2'/%3E%3Ccircle cx='12' cy='10.5' r='2.5' fill='%23af3a03'/%3E%3C/svg%3E">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -16,33 +17,75 @@
     overflow: hidden;
   }
   #statusbar {
-    padding: 0 16px;
+    padding: 6px 12px;
     background: #111;
     border-bottom: 1px solid #222;
     display: flex;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 6px 16px;
     font-size: 12px;
     color: #666;
     flex-shrink: 0;
-    height: 36px;
+    min-height: 36px;
     align-items: center;
   }
   #statusbar span { color: #e0e0e0; }
+  #status-group { display: flex; align-items: center; white-space: nowrap; }
   #status-dot {
     width: 8px; height: 8px; border-radius: 50%;
     background: #333; display: inline-block; margin-right: 6px;
+    flex-shrink: 0;
     transition: background 0.3s;
   }
   #status-dot.connected { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
-  #status-dot.connecting { background: #fbbf24; }
+  #status-dot.connecting { background: #fbbf24; animation: pulse 1.2s ease-in-out infinite; }
   #status-dot.error     { background: #f87171; }
-  #btn-mode {
-    margin-left: auto; padding: 2px 10px;
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  #stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    color: #666;
+  }
+
+  #btn-row {
+    margin-left: auto;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .btn {
+    padding: 3px 10px;
     background: #222; border: 1px solid #444; color: #e0e0e0;
     font-family: 'Courier New', monospace; font-size: 11px;
     cursor: pointer; border-radius: 3px; user-select: none;
+    transition: background 0.15s, border-color 0.15s;
+    min-height: 26px;
   }
-  #btn-mode:hover { background: #333; }
+  .btn:hover { background: #333; }
+  .btn:active { background: #3a3a3a; }
+  #btn-control[hidden] { display: none; }
+  #btn-control.on { background: #7c2d12; border-color: #c2410c; }
+  #btn-debug.on { background: #333; border-color: #555; color: #fff; }
+  #display-canvas.control { cursor: crosshair; touch-action: none; }
+
+  #debug-panel {
+    display: none;
+    width: 100%;
+    padding-top: 4px;
+    font-size: 11px;
+    color: #555;
+    border-top: 1px dashed #222;
+  }
+  #debug-panel.on { display: block; }
+
+  @media (max-width: 640px) {
+    #stats { display: none; }
+    #statusbar { min-height: 32px; padding: 5px 10px; }
+    .btn { padding: 5px 10px; }
+  }
 
   #viewport {
     flex: 1;
@@ -110,13 +153,19 @@
 <body>
 
 <div id="statusbar">
-  <div><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
-  <div>Тайлів/с: <span id="tiles">—</span></div>
-  <div>Трафік: <span id="frame-size">—</span></div>
-  <div>Латентність: <span id="latency">—</span></div>
-  <div>Розмір: <span id="info">—</span></div>
-  <div>Debug: <span id="debug-info">—</span></div>
-  <button id="btn-mode">FIT</button>
+  <div id="status-group"><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
+  <div id="stats">
+    <div>Тайлів/с: <span id="tiles">—</span></div>
+    <div>Трафік: <span id="frame-size">—</span></div>
+    <div>Латентність: <span id="latency">—</span></div>
+    <div>Розмір: <span id="info">—</span></div>
+  </div>
+  <div id="btn-row">
+    <button id="btn-debug" class="btn" title="Показати діагностику з'єднання">DEBUG</button>
+    <button id="btn-mode" class="btn">FIT</button>
+    <button id="btn-control" class="btn" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
+  </div>
+  <div id="debug-panel"><span id="debug-info">—</span></div>
 </div>
 
 <div id="viewport">
@@ -150,6 +199,9 @@
   const latencyEl   = document.getElementById('latency');
   const infoEl      = document.getElementById('info');
   const btnMode     = document.getElementById('btn-mode');
+  const btnControl  = document.getElementById('btn-control');
+  const btnDebug    = document.getElementById('btn-debug');
+  const debugPanel  = document.getElementById('debug-panel');
   const passwordOverlay = document.getElementById('password-overlay');
   const passwordForm    = document.getElementById('password-form');
   const passwordInput   = document.getElementById('password-input');
@@ -158,6 +210,18 @@
   passwordToggle.addEventListener('click', () => {
     passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password';
   });
+
+  // Raw per-message diagnostics (msgs/ack/tileMsgs/…) are developer noise
+  // for a normal viewer, so they're off by default — same philosophy as the
+  // server's own --debug flag. `?debug=1` opens it pre-toggled, so a support
+  // link can be shared with it already visible.
+  const debugWanted = new URLSearchParams(location.search).get('debug') === '1';
+  function setDebugPanel(on) {
+    debugPanel.classList.toggle('on', on);
+    btnDebug.classList.toggle('on', on);
+  }
+  btnDebug.addEventListener('click', () => setDebugPanel(!debugPanel.classList.contains('on')));
+  setDebugPanel(debugWanted);
 
   let mode    = 'fit';
   let screenW = 0;
@@ -321,9 +385,10 @@
 
   const TOKEN_STORAGE_KEY = 'ring2zero_token';
 
-  function buildWsUrl(token) {
-    return `${wsScheme}://${wsHost}?token=${encodeURIComponent(token)}`;
-  }
+  // The token is sent as the first WebSocket message, never in the URL,
+  // where it would end up in history and proxy logs.
+  const wsUrl = `${wsScheme}://${wsHost}`;
+  const CLOSE_UNAUTHORIZED = 4001; // see src/auth.rs
 
   // Password gate: ask once, remember on this device (localStorage) so the
   // bookmarked link doesn't need the token pasted into the URL bar (visible
@@ -345,25 +410,16 @@
   }
 
   let lastAuthFailed = false;
-  // A close-before-open could mean a wrong token, but the WebSocket API
-  // doesn't expose the HTTP status code, so it's equally consistent with a
-  // transient network blip or a server restart. Only wipe a *cached*
-  // (previously working) token after it fails this many times in a row —
-  // a fresh, just-typed token is still treated as wrong on the first try,
-  // since that's genuinely its first use.
-  let cachedAuthFailCount = 0;
-  const MAX_CACHED_AUTH_RETRIES = 3;
+  let serverHello = null; // {version, ice_servers, control} — sent by the server after auth
 
   async function connect() {
     resetStats();
 
     let token = localStorage.getItem(TOKEN_STORAGE_KEY);
-    const usedCachedToken = !!token;
     if (!token) {
       token = await promptForToken(lastAuthFailed);
       lastAuthFailed = false;
     }
-    const wsUrl = buildWsUrl(token);
 
     statusDot.className = 'connecting';
     statusText.textContent = `Підключення до ${wsScheme}://${wsHost}...`;
@@ -371,21 +427,25 @@
     try {
       console.log('Connecting to:', wsUrl);
       ws = new WebSocket(wsUrl);
-      let wsOpened = false;
+      let authenticated = false;
 
       ws.onopen = () => {
-        wsOpened = true;
-        cachedAuthFailCount = 0;
-        localStorage.setItem(TOKEN_STORAGE_KEY, token);
-        console.log('WebSocket connected, waiting for offer...');
-        statusText.textContent = 'WebSocket підключено, чекаємо offer...';
+        ws.send(JSON.stringify({ type: 'auth', token }));
+        statusText.textContent = 'Перевірка пароля...';
       };
 
       ws.onmessage = async (event) => {
         try {
           const message = JSON.parse(event.data);
 
-          if (message.type === 'offer') {
+          if (message.type === 'hello') {
+            authenticated = true;
+            serverHello = message;
+            localStorage.setItem(TOKEN_STORAGE_KEY, token);
+            btnControl.hidden = !message.control;
+            console.log(`Authenticated, server v${message.version}, waiting for offer...`);
+            statusText.textContent = 'Пароль прийнято, чекаємо offer...';
+          } else if (message.type === 'offer') {
             console.log('Received offer from server');
             statusText.textContent = 'Отримано offer, створюємо з\'єднання...';
             currentSession = message.session;
@@ -398,7 +458,7 @@
             }
 
             pc = new RTCPeerConnection({
-              iceServers: []
+              iceServers: (serverHello && serverHello.ice_servers) || []
             });
 
             pc.oniceconnectionstatechange = () => {
@@ -421,6 +481,10 @@
 
             pc.ondatachannel = (event) => {
               console.log('DataChannel received from server:', event.channel.label);
+              if (event.channel.label === 'input') {
+                attachInputChannel(event.channel);
+                return;
+              }
               dataChannel = event.channel;
               dataChannel.binaryType = 'arraybuffer';
 
@@ -580,28 +644,23 @@
         statusText.textContent = 'Помилка WebSocket';
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket closed');
+      ws.onclose = (event) => {
+        console.log('WebSocket closed', event.code);
         statusDot.className = 'error';
-        if (!wsOpened) {
-          // Never got past the handshake. A freshly-typed token failing on
-          // its first use is very likely just wrong — reprompt right away.
-          // A *cached* token (one that worked before) gets a few retries
-          // first, since this same symptom equally means "server briefly
-          // unreachable" and wiping a good token on a network blip forces
-          // the user to retype a password that was never wrong.
-          if (!usedCachedToken || ++cachedAuthFailCount >= MAX_CACHED_AUTH_RETRIES) {
-            localStorage.removeItem(TOKEN_STORAGE_KEY);
-            lastAuthFailed = true;
-            cachedAuthFailCount = 0;
-            statusText.textContent = 'Не вдалося увійти — можливо, невірний пароль';
-            setTimeout(connect, 300);
-          } else {
-            statusText.textContent = `Не вдалося підключитися, повторна спроба (${cachedAuthFailCount}/${MAX_CACHED_AUTH_RETRIES})...`;
-            setTimeout(connect, 1000);
-          }
+        inputCapture.disable();
+        if (event.code === CLOSE_UNAUTHORIZED) {
+          // The server explicitly rejected the token — the only case where
+          // it's actually wrong. Anything else (network blip, restart) keeps
+          // the saved token and just retries.
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          lastAuthFailed = true;
+          statusText.textContent = 'Невірний пароль';
+          setTimeout(connect, 300);
         } else {
-          statusText.textContent = 'З\'єднання закрито';
+          statusText.textContent = authenticated
+            ? 'З\'єднання закрито, перепідключення...'
+            : 'Сервер недоступний, повторна спроба...';
+          setTimeout(connect, authenticated ? 1000 : 2000);
         }
       };
 
@@ -610,6 +669,175 @@
       statusDot.className = 'error';
       statusText.textContent = 'Не вдалося підключитися: ' + errMsg(err);
     }
+  }
+
+  // --- Remote control -----------------------------------------------------
+  // The server only opens an "input" channel when started with --control.
+  let inputChannel = null;
+  const inputCapture = createInputCapture({
+    canvas: dispCanvas,
+    getGeometry: () => (screenW ? { dst, dpr: mode === 'fit' ? (window.devicePixelRatio || 1) : 1 } : null),
+    send: (buf) => {
+      if (inputChannel && inputChannel.readyState === 'open') inputChannel.send(buf);
+    },
+  });
+
+  function setControl(on) {
+    if (on) inputCapture.enable(); else inputCapture.disable();
+    btnControl.classList.toggle('on', on);
+    btnControl.textContent = on ? 'КЕРУВАННЯ: УВІМК' : 'КЕРУВАННЯ: ВИМК';
+    dispCanvas.classList.toggle('control', on);
+  }
+
+  function attachInputChannel(channel) {
+    inputChannel = channel;
+    channel.binaryType = 'arraybuffer';
+    channel.onclose = () => { setControl(false); inputChannel = null; };
+  }
+
+  btnControl.addEventListener('click', () => {
+    setControl(!inputCapture.isEnabled());
+    btnControl.blur(); // so Space/Enter go to the remote, not re-toggle this button
+  });
+
+// Captures mouse/keyboard over the canvas and sends them as input-channel
+  // events (wire format: src/protocol.rs). Keys go by physical position
+  // (KeyboardEvent.code → Linux evdev code), so the host's layout decides
+  // what gets typed. Everything held is released on disable, blur and tab
+  // hide — otherwise a key held while focus leaves stays stuck on the host.
+  function createInputCapture({ canvas, getGeometry, send }) {
+    const KEYMAP = {
+      Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6, Digit6: 7, Digit7: 8, Digit8: 9, Digit9: 10, Digit0: 11,
+      Minus: 12, Equal: 13, Backspace: 14, Tab: 15,
+      KeyQ: 16, KeyW: 17, KeyE: 18, KeyR: 19, KeyT: 20, KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25,
+      BracketLeft: 26, BracketRight: 27, Enter: 28, ControlLeft: 29,
+      KeyA: 30, KeyS: 31, KeyD: 32, KeyF: 33, KeyG: 34, KeyH: 35, KeyJ: 36, KeyK: 37, KeyL: 38,
+      Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42, Backslash: 43,
+      KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48, KeyN: 49, KeyM: 50,
+      Comma: 51, Period: 52, Slash: 53, ShiftRight: 54, NumpadMultiply: 55, AltLeft: 56, Space: 57, CapsLock: 58,
+      F1: 59, F2: 60, F3: 61, F4: 62, F5: 63, F6: 64, F7: 65, F8: 66, F9: 67, F10: 68,
+      NumLock: 69, ScrollLock: 70, Numpad7: 71, Numpad8: 72, Numpad9: 73, NumpadSubtract: 74,
+      Numpad4: 75, Numpad5: 76, Numpad6: 77, NumpadAdd: 78, Numpad1: 79, Numpad2: 80, Numpad3: 81,
+      Numpad0: 82, NumpadDecimal: 83, IntlBackslash: 86, F11: 87, F12: 88,
+      NumpadEnter: 96, ControlRight: 97, NumpadDivide: 98, PrintScreen: 99, AltRight: 100,
+      Home: 102, ArrowUp: 103, PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108,
+      PageDown: 109, Insert: 110, Delete: 111, Pause: 119, MetaLeft: 125, MetaRight: 126, ContextMenu: 127,
+    };
+
+    let enabled = false;
+    let pendingMotion = null; // latest [x, y], flushed once per animation frame
+    let rafId = 0;
+    const heldKeys = new Set();
+    const heldButtons = new Set();
+
+    function msg(type, fill, len) {
+      const buf = new ArrayBuffer(len);
+      const v = new DataView(buf);
+      v.setUint8(0, type);
+      fill(v);
+      return buf;
+    }
+    const clampI16 = (n) => Math.max(-32768, Math.min(32767, Math.round(n)));
+
+    function sendMotionNow(x, y) {
+      send(msg(0x01, (v) => { v.setUint16(1, x, true); v.setUint16(3, y, true); }, 5));
+    }
+    function flushMotion() {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      if (pendingMotion) { sendMotionNow(...pendingMotion); pendingMotion = null; }
+    }
+    function sendButton(button, pressed) {
+      send(msg(0x02, (v) => { v.setUint8(1, button); v.setUint8(2, pressed ? 1 : 0); }, 3));
+    }
+    function sendKey(code, pressed) {
+      send(msg(0x04, (v) => { v.setUint16(1, code, true); v.setUint8(3, pressed ? 1 : 0); }, 4));
+    }
+
+    // Canvas-local pointer position → normalised 0..65535 over the drawn
+    // remote screen (dst is in backing-store pixels), clamped to its edges.
+    function normalise(e) {
+      const g = getGeometry();
+      if (!g || !g.dst.w || !g.dst.h) return null;
+      const f = (off, start, size) => Math.round(Math.max(0, Math.min(1, (off * g.dpr - start) / size)) * 65535);
+      return [f(e.offsetX, g.dst.x, g.dst.w), f(e.offsetY, g.dst.y, g.dst.h)];
+    }
+
+    function onPointerMove(e) {
+      const pos = normalise(e);
+      if (!pos) return;
+      pendingMotion = pos;
+      if (!rafId) rafId = requestAnimationFrame(() => { rafId = 0; flushMotion(); });
+    }
+    function onPointerDown(e) {
+      canvas.setPointerCapture(e.pointerId); // drags that leave the canvas still get their mouseup
+    }
+    // mousedown/mouseup rather than pointer events for buttons: a second
+    // button pressed while another is held fires no pointerdown, only a
+    // pointermove, but it does fire mousedown.
+    function onMouseButton(e) {
+      if (e.button > 4) return;
+      const pressed = e.type === 'mousedown';
+      if (e.button >= 3) e.preventDefault(); // back/forward would navigate away
+      if (pressed === heldButtons.has(e.button)) return;
+      const pos = normalise(e);
+      if (pos) { pendingMotion = pos; }
+      flushMotion(); // the click must land where the pointer is
+      if (pressed) heldButtons.add(e.button); else heldButtons.delete(e.button);
+      sendButton(e.button, pressed);
+    }
+    function onWheel(e) {
+      e.preventDefault();
+      const scale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 800 : 1;
+      const dx = clampI16(e.deltaX * scale), dy = clampI16(e.deltaY * scale);
+      if (!dx && !dy) return;
+      flushMotion();
+      send(msg(0x03, (v) => { v.setInt16(1, dx, true); v.setInt16(3, dy, true); }, 5));
+    }
+    function onKey(e) {
+      const code = KEYMAP[e.code];
+      if (code === undefined) return;
+      e.preventDefault();
+      const pressed = e.type === 'keydown';
+      if (e.repeat || pressed === heldKeys.has(code)) return; // the host does its own key repeat
+      if (pressed) heldKeys.add(code); else heldKeys.delete(code);
+      sendKey(code, pressed);
+    }
+    const suppress = (e) => e.preventDefault();
+    function onVisibility() { if (document.visibilityState === 'hidden') releaseAll(); }
+
+    const listeners = [
+      [canvas, 'pointermove', onPointerMove],
+      [canvas, 'pointerdown', onPointerDown],
+      [canvas, 'mousedown', onMouseButton],
+      [canvas, 'mouseup', onMouseButton],
+      [canvas, 'auxclick', suppress],
+      [canvas, 'contextmenu', suppress],
+      [canvas, 'wheel', onWheel, { passive: false }],
+      [window, 'keydown', onKey],
+      [window, 'keyup', onKey],
+      [window, 'blur', releaseAll],
+      [document, 'visibilitychange', onVisibility],
+    ];
+
+    function releaseAll() {
+      flushMotion();
+      for (const code of heldKeys) sendKey(code, false);
+      for (const b of heldButtons) sendButton(b, false);
+      heldKeys.clear();
+      heldButtons.clear();
+    }
+    function enable() {
+      if (enabled) return;
+      enabled = true;
+      for (const [t, ev, fn, o] of listeners) t.addEventListener(ev, fn, o);
+    }
+    function disable() {
+      if (!enabled) return;
+      releaseAll();
+      for (const [t, ev, fn, o] of listeners) t.removeEventListener(ev, fn, o);
+      enabled = false;
+    }
+    return { enable, disable, releaseAll, isEnabled: () => enabled };
   }
 
   connect();
