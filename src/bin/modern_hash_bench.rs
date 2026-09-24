@@ -1,3 +1,9 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 /// Modern Hash Functions Comparison
 /// Порівняння сучасних швидких хеш-функцій: xxHash3, HighwayHash, FNV-1a, CityHash

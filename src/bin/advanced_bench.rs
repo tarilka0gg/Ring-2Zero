@@ -1,3 +1,9 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 /// Advanced Performance Benchmark with Detailed Metrics
 /// Ring-2Zero v0.149+ - Comprehensive performance analysis
 ///
@@ -9,8 +15,7 @@ use screen_streamer::config::Config;
 use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // ============================================================================
 // Frame Generation (same as detailed_bench)
@@ -196,12 +201,12 @@ fn benchmark_scenario_advanced(
     let height = 1080u32;
 
     let grid = config.grid(width, height);
-    let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
+    let (tile_width, tile_height, _tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
     // Run multiple times and collect results
     let mut run_results = Vec::new();
 
-    for i in 0..runs {
+    for _i in 0..runs {
         let mut cfg = config.clone();
         cfg.debug_mode = false; // Явно вимикаємо debug
         let mut diff_detector = DiffDetector::new(cfg.clone());
@@ -219,7 +224,7 @@ fn benchmark_scenario_advanced(
         let mut total_tiles_after = 0usize;
         let mut total_cache_hits = 0usize;
 
-        let overall_start = Instant::now();
+        let _overall_start = Instant::now();
 
         for frame_num in 1..=frames {
             let rgba = generate_scenario_frame(width, height, frame_num, scenario);
@@ -540,12 +545,11 @@ fn main() {
     println!("║  Comprehensive metrics: Performance │ Pipeline │ Quality      ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-    let mut config = Config::default();
-    config.debug_mode = false;
+    let config = Config::default(); // debug_mode is already false
 
     let tile_width = 1920 / config.tiles_x;
     let tile_height = tile_width * 1080 / 1920;
-    let tiles_y = (1080 + tile_height - 1) / tile_height;
+    let tiles_y = 1080_u32.div_ceil(tile_height);
 
     println!("⚙️  Configuration:");
     println!("   Resolution: 1920×1080");

@@ -1,10 +1,15 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 /// Frame processing profiler - показує що саме займає час
 /// Детальний breakdown кожної операції в pipeline
 use screen_streamer::config::Config;
 use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
-use std::sync::Arc;
 use std::time::Instant;
 
 fn generate_test_frame(width: u32, height: u32, frame_num: usize, change_pct: f32) -> Vec<u8> {
