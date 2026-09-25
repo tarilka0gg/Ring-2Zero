@@ -311,17 +311,6 @@ where
             .clipboard_channel
             .as_ref()
             .map(clipboard::attach);
-        #[cfg(feature = "audio_capture")]
-        let audio = match webrtc_conn.audio_track.as_ref() {
-            Some(track) => match crate::audio::attach(Arc::clone(track)) {
-                Ok(session) => Some(session),
-                Err(e) => {
-                    log::error!("Audio capture setup failed: {e}");
-                    None
-                }
-            },
-            None => None,
-        };
 
         // Keep reading the WebSocket while streaming: otherwise a closed tab
         // or a client-initiated close goes unnoticed (the browser hangs in
@@ -360,10 +349,6 @@ where
             session.detach().await;
         }
         if let Some(session) = clipboard {
-            session.detach().await;
-        }
-        #[cfg(feature = "audio_capture")]
-        if let Some(session) = audio {
             session.detach().await;
         }
         stop.store(true, Ordering::Relaxed);

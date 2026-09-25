@@ -1,7 +1,5 @@
 // Library exports for screen-streamer
 
-#[cfg(feature = "audio_capture")]
-pub mod audio;
 pub mod auth;
 pub mod bandwidth;
 pub mod capture;

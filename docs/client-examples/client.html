@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="uk">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <meta charset="UTF-8">
 <title>Ring-2Zero</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='4' width='20' height='13' rx='2' fill='none' stroke='%23af3a03' stroke-width='2'/%3E%3Cline x1='8' y1='21' x2='16' y2='21' stroke='%23af3a03' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='12' y1='17' x2='12' y2='21' stroke='%23af3a03' stroke-width='2'/%3E%3Ccircle cx='12' cy='10.5' r='2.5' fill='%23af3a03'/%3E%3C/svg%3E">
@@ -165,7 +165,6 @@
     <button id="btn-mode" class="btn">FIT</button>
     <button id="btn-control" class="btn" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
     <button id="btn-keyboard" class="btn" hidden title="Показати клавіатуру для введення тексту">⌨</button>
-    <button id="btn-audio-unmute" class="btn" hidden title="Браузер заблокував автовідтворення — увімкнути звук">🔇</button>
   </div>
   <div id="debug-panel"><span id="debug-info">—</span></div>
 </div>
@@ -203,7 +202,6 @@
   const btnMode     = document.getElementById('btn-mode');
   const btnControl  = document.getElementById('btn-control');
   const btnKeyboard = document.getElementById('btn-keyboard');
-  const btnAudioUnmute = document.getElementById('btn-audio-unmute');
   const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
   const btnDebug    = document.getElementById('btn-debug');
   const debugPanel  = document.getElementById('debug-panel');
@@ -312,6 +310,15 @@
   window.addEventListener('resize', () => {
     requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
   });
+  // `interactive-widget=resizes-content` above makes most mobile browsers
+  // fire a plain `resize` when the on-screen keyboard opens/closes, but not
+  // all of them do reliably — visualViewport's own resize event is the one
+  // guaranteed to fire either way, so both are wired to be safe.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+      requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
+    });
+  }
 
   // Stringifies an error/rejection value for display: prefer `.message` when
   // present, otherwise fall back to a safe String() conversion (handles
@@ -393,28 +400,6 @@
       // Permission not granted yet, or nothing text-like on the clipboard — not worth logging every tick.
     }
   }, 700);
-
-  // --- Desktop audio -----------------------------------------------------
-  let audioEl = null;
-  function attachAudioTrack(stream) {
-    if (!audioEl) {
-      audioEl = document.createElement('audio');
-      audioEl.autoplay = true;
-      audioEl.style.display = 'none';
-      document.body.appendChild(audioEl);
-    }
-    audioEl.srcObject = stream;
-    audioEl.play().then(() => {
-      btnAudioUnmute.hidden = true;
-    }).catch(() => {
-      // Autoplay without a prior user gesture is blocked by most browsers;
-      // surface a button so one click (a gesture) can start it.
-      btnAudioUnmute.hidden = false;
-    });
-  }
-  btnAudioUnmute.addEventListener('click', () => {
-    if (audioEl) audioEl.play().then(() => { btnAudioUnmute.hidden = true; }).catch(() => {});
-  });
 
   const debugInfoEl = document.getElementById('debug-info');
   setInterval(() => {
@@ -544,11 +529,6 @@
                   session: currentSession
                 }));
               }
-            };
-
-            pc.ontrack = (event) => {
-              console.log('Track received from server:', event.track.kind);
-              if (event.track.kind === 'audio') attachAudioTrack(event.streams[0]);
             };
 
             pc.ondatachannel = (event) => {

@@ -142,7 +142,6 @@ fn help_text() -> String {
      \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
      \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
      \x20   --control        Let clients control this machine's mouse and keyboard\n\
-     \x20   --audio          Stream desktop audio (needs --features audio_capture)\n\
      \n\
      Once running, open http://<this-machine>:9001 in a browser — the auth\n\
      token printed on startup is the connection password. No separate client\n\
@@ -157,7 +156,6 @@ fn help_text() -> String {
      \x20   RING2ZERO_ICE_SERVERS     STUN/TURN for use across NAT, comma-separated:\n\
      \x20                             stun:host:port,turn:user:pass@host:port\n\
      \x20   RING2ZERO_CONTROL         Same as --control\n\
-     \x20   RING2ZERO_AUDIO           Same as --audio\n\
      \x20   RING2ZERO_OUTPUT          Capture this named output (e.g. DP-1) instead of\n\
      \x20                             the first one; falls back to the first if not found\n\
      \n\
@@ -264,15 +262,6 @@ async fn main() -> Result<()> {
     if args.iter().any(|a| a == "--control") {
         config.control = true;
     }
-    if args.iter().any(|a| a == "--audio") {
-        config.audio = true;
-    }
-    if config.audio && cfg!(not(feature = "audio_capture")) {
-        eprintln!(
-            "--audio requested but this binary was built without --features audio_capture; ignoring"
-        );
-        config.audio = false;
-    }
     if let Ok(spec) = std::env::var("RING2ZERO_ICE_SERVERS") {
         match screen_streamer::ice::parse_ice_servers(&spec) {
             Ok(servers) => config.ice_servers = servers,
@@ -326,9 +315,6 @@ async fn main() -> Result<()> {
     }
     if config.control {
         println!("⚠️  Remote control ENABLED — anyone with the token can use this machine's mouse and keyboard");
-    }
-    if config.audio {
-        println!("🔊 Desktop audio streaming ENABLED — anyone with the token can hear this machine's audio output");
     }
 
     loop {
