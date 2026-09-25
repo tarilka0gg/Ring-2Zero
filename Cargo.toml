@@ -81,12 +81,15 @@ webrtc-ice = "0.17"
 env_logger = "0.11.11"
 log = "0.4"
 subtle = "2.6"
+wl-clipboard-rs = "0.9.3"
+opus = { version = "0.4.0", optional = true }
 
 [features]
 quality_metrics = []
 bench_tools = []
 webp_bench = ["webp", "webpx", "webp-rust"]
 pipewire_capture = []
+audio_capture = ["dep:opus"]
 
 [build-dependencies]
 cc = "1"

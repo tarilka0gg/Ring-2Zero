@@ -164,6 +164,8 @@
     <button id="btn-debug" class="btn" title="Показати діагностику з'єднання">DEBUG</button>
     <button id="btn-mode" class="btn">FIT</button>
     <button id="btn-control" class="btn" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
+    <button id="btn-keyboard" class="btn" hidden title="Показати клавіатуру для введення тексту">⌨</button>
+    <button id="btn-audio-unmute" class="btn" hidden title="Браузер заблокував автовідтворення — увімкнути звук">🔇</button>
   </div>
   <div id="debug-panel"><span id="debug-info">—</span></div>
 </div>
@@ -200,6 +202,9 @@
   const infoEl      = document.getElementById('info');
   const btnMode     = document.getElementById('btn-mode');
   const btnControl  = document.getElementById('btn-control');
+  const btnKeyboard = document.getElementById('btn-keyboard');
+  const btnAudioUnmute = document.getElementById('btn-audio-unmute');
+  const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
   const btnDebug    = document.getElementById('btn-debug');
   const debugPanel  = document.getElementById('debug-panel');
   const passwordOverlay = document.getElementById('password-overlay');
@@ -349,6 +354,68 @@
   let ackMsgCount = 0;
   let tileMsgCount = 0;
 
+  // --- Clipboard sync --------------------------------------------------
+  // Wire format matches src/clipboard.rs: each message, either direction,
+  // is the new clipboard text as raw UTF-8 bytes.
+  let clipboardChannel = null;
+  let clipboardLastSeen = null;
+  const clipboardDecoder = new TextDecoder();
+  const clipboardEncoder = new TextEncoder();
+
+  function attachClipboardChannel(channel) {
+    clipboardChannel = channel;
+    channel.binaryType = 'arraybuffer';
+    channel.onmessage = async (event) => {
+      const text = clipboardDecoder.decode(event.data);
+      clipboardLastSeen = text;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        console.warn('Clipboard write failed (needs focus/permission):', errMsg(e));
+      }
+    };
+    channel.onclose = () => { clipboardChannel = null; };
+  }
+
+  // No cross-browser "clipboard changed" event exists, so the browser side
+  // is polled too, same trade-off as the host (see src/clipboard.rs) — a
+  // sub-second propagation isn't needed for a copy/paste sync.
+  setInterval(async () => {
+    if (!clipboardChannel || clipboardChannel.readyState !== 'open') return;
+    if (!document.hasFocus()) return; // readText() throws without focus anyway
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && text !== clipboardLastSeen) {
+        clipboardLastSeen = text;
+        clipboardChannel.send(clipboardEncoder.encode(text));
+      }
+    } catch (e) {
+      // Permission not granted yet, or nothing text-like on the clipboard — not worth logging every tick.
+    }
+  }, 700);
+
+  // --- Desktop audio -----------------------------------------------------
+  let audioEl = null;
+  function attachAudioTrack(stream) {
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.autoplay = true;
+      audioEl.style.display = 'none';
+      document.body.appendChild(audioEl);
+    }
+    audioEl.srcObject = stream;
+    audioEl.play().then(() => {
+      btnAudioUnmute.hidden = true;
+    }).catch(() => {
+      // Autoplay without a prior user gesture is blocked by most browsers;
+      // surface a button so one click (a gesture) can start it.
+      btnAudioUnmute.hidden = false;
+    });
+  }
+  btnAudioUnmute.addEventListener('click', () => {
+    if (audioEl) audioEl.play().then(() => { btnAudioUnmute.hidden = true; }).catch(() => {});
+  });
+
   const debugInfoEl = document.getElementById('debug-info');
   setInterval(() => {
     debugInfoEl.textContent =
@@ -479,10 +546,19 @@
               }
             };
 
+            pc.ontrack = (event) => {
+              console.log('Track received from server:', event.track.kind);
+              if (event.track.kind === 'audio') attachAudioTrack(event.streams[0]);
+            };
+
             pc.ondatachannel = (event) => {
               console.log('DataChannel received from server:', event.channel.label);
               if (event.channel.label === 'input') {
                 attachInputChannel(event.channel);
+                return;
+              }
+              if (event.channel.label === 'clipboard') {
+                attachClipboardChannel(event.channel);
                 return;
               }
               dataChannel = event.channel;
@@ -687,7 +763,10 @@
     btnControl.classList.toggle('on', on);
     btnControl.textContent = on ? 'КЕРУВАННЯ: УВІМК' : 'КЕРУВАННЯ: ВИМК';
     dispCanvas.classList.toggle('control', on);
+    btnKeyboard.hidden = !(on && isTouchDevice);
   }
+
+  btnKeyboard.addEventListener('click', () => inputCapture.focusKeyboard());
 
   function attachInputChannel(channel) {
     inputChannel = channel;
@@ -730,6 +809,27 @@
     const heldKeys = new Set();
     const heldButtons = new Set();
 
+    // Mobile touch state
+    let longPressTimer = null;
+    let longPressStartPos = null;
+    let longPressButton2Pending = false; // timer running, press not sent yet
+    let longPressButton2Fired = false;   // press already sent, release still owed
+    let twoFingerPrevAvg = null;
+
+    // Hidden input used as a bridge to the on-screen keyboard: focusing it
+    // opens the mobile keyboard, and its `input` events are diffed against
+    // the previous value to synthesize key events for the host.
+    const kbInput = document.createElement('input');
+    kbInput.type = 'text';
+    kbInput.autocomplete = 'off';
+    kbInput.autocapitalize = 'off';
+    kbInput.autocorrect = 'off';
+    kbInput.spellcheck = false;
+    kbInput.tabIndex = -1;
+    kbInput.id = 'mobile-keyboard-bridge';
+    kbInput.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:0;padding:0';
+    document.body.appendChild(kbInput);
+
     function msg(type, fill, len) {
       const buf = new ArrayBuffer(len);
       const v = new DataView(buf);
@@ -760,6 +860,20 @@
       if (!g || !g.dst.w || !g.dst.h) return null;
       const f = (off, start, size) => Math.round(Math.max(0, Math.min(1, (off * g.dpr - start) / size)) * 65535);
       return [f(e.offsetX, g.dst.x, g.dst.w), f(e.offsetY, g.dst.y, g.dst.h)];
+    }
+
+    // Same as normalise(), but for a Touch object — Touch has no
+    // offsetX/offsetY (only client/page/screen coordinates), so its offset
+    // into the canvas has to be computed from the canvas's own rect.
+    function normaliseTouch(touch) {
+      const g = getGeometry();
+      if (!g || !g.dst.w || !g.dst.h) return null;
+      const rect = canvas.getBoundingClientRect();
+      const f = (off, start, size) => Math.round(Math.max(0, Math.min(1, (off * g.dpr - start) / size)) * 65535);
+      return [
+        f(touch.clientX - rect.left, g.dst.x, g.dst.w),
+        f(touch.clientY - rect.top, g.dst.y, g.dst.h),
+      ];
     }
 
     function onPointerMove(e) {
@@ -805,6 +919,141 @@
     const suppress = (e) => e.preventDefault();
     function onVisibility() { if (document.visibilityState === 'hidden') releaseAll(); }
 
+    // Cancels any in-flight long-press: clears the timer if it hasn't fired
+    // yet, and sends the matching button-2 release if it has.
+    function cancelLongPress() {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      longPressButton2Pending = false;
+      longPressStartPos = null;
+      if (longPressButton2Fired) {
+        sendButton(2, false);
+        longPressButton2Fired = false;
+      }
+    }
+
+    function onTouchStart(e) {
+      if (e.touches.length === 1) {
+        e.preventDefault(); // no text selection / native context menu
+        const pos = normaliseTouch(e.touches[0]);
+        if (pos) {
+          longPressStartPos = pos;
+          longPressButton2Pending = true;
+          longPressTimer = setTimeout(() => {
+            if (longPressButton2Pending) {
+              longPressButton2Pending = false;
+              longPressButton2Fired = true;
+              sendButton(2, true);
+            }
+          }, 550);
+        }
+      } else if (e.touches.length === 2) {
+        cancelLongPress();
+        const g = getGeometry();
+        if (!g) { twoFingerPrevAvg = null; return; }
+        const avgX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const avgY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        twoFingerPrevAvg = [avgX * g.dpr - g.dst.x, avgY * g.dpr - g.dst.y];
+      } else {
+        cancelLongPress();
+        twoFingerPrevAvg = null;
+      }
+    }
+
+    function onTouchMove(e) {
+      if (e.touches.length === 1) {
+        // Not preventDefault()'d: pointer events still handle the drag.
+        if (longPressStartPos) {
+          const pos = normaliseTouch(e.touches[0]);
+          if (pos) {
+            const moved = Math.abs(pos[0] - longPressStartPos[0]) + Math.abs(pos[1] - longPressStartPos[1]);
+            if (moved > 10) cancelLongPress(); // 10px threshold, 0..65535 units
+          }
+        }
+      } else if (e.touches.length === 2) {
+        e.preventDefault();
+        const g = getGeometry();
+        if (!g || !twoFingerPrevAvg) return;
+        const avgX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const avgY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const cur = [avgX * g.dpr - g.dst.x, avgY * g.dpr - g.dst.y];
+        const dx = clampI16(cur[0] - twoFingerPrevAvg[0]);
+        const dy = clampI16(-(cur[1] - twoFingerPrevAvg[1])); // natural scroll: fingers up = scroll down
+        twoFingerPrevAvg = cur;
+        if (dx || dy) {
+          flushMotion();
+          send(msg(0x03, (v) => { v.setInt16(1, dx, true); v.setInt16(3, dy, true); }, 5));
+        }
+      }
+    }
+
+    function onTouchEnd(e) {
+      if (e.touches.length === 0) cancelLongPress();
+      if (e.touches.length < 2) twoFingerPrevAvg = null;
+    }
+    function onTouchCancel() {
+      cancelLongPress();
+      twoFingerPrevAvg = null;
+    }
+
+    // Keyboard bridge: diff the hidden input's value against what was there
+    // before to turn typing/backspacing into the same key events a physical
+    // keyboard would send. The field is cleared after every event, so
+    // "before" is always "" and "after" is always the freshly typed text.
+    function onKbInput(e) {
+      if (e.inputType === 'deleteContentBackward') {
+        sendKey(KEYMAP.Backspace, true);
+        sendKey(KEYMAP.Backspace, false);
+      } else {
+        for (const ch of e.target.value) sendChar(ch);
+      }
+      e.target.value = '';
+    }
+    const CHAR_MAP = (() => {
+      const m = {};
+      const row = (lower, upper, base) => {
+        for (let i = 0; i < lower.length; i++) {
+          m[lower[i]] = { code: base[i], shift: false };
+          if (upper) m[upper[i]] = { code: base[i], shift: true };
+        }
+      };
+      row('qwertyuiop', 'QWERTYUIOP', [KEYMAP.KeyQ, KEYMAP.KeyW, KEYMAP.KeyE, KEYMAP.KeyR, KEYMAP.KeyT, KEYMAP.KeyY, KEYMAP.KeyU, KEYMAP.KeyI, KEYMAP.KeyO, KEYMAP.KeyP]);
+      row('asdfghjkl', 'ASDFGHJKL', [KEYMAP.KeyA, KEYMAP.KeyS, KEYMAP.KeyD, KEYMAP.KeyF, KEYMAP.KeyG, KEYMAP.KeyH, KEYMAP.KeyJ, KEYMAP.KeyK, KEYMAP.KeyL]);
+      row('zxcvbnm', 'ZXCVBNM', [KEYMAP.KeyZ, KEYMAP.KeyX, KEYMAP.KeyC, KEYMAP.KeyV, KEYMAP.KeyB, KEYMAP.KeyN, KEYMAP.KeyM]);
+      const digits = [KEYMAP.Digit0, KEYMAP.Digit1, KEYMAP.Digit2, KEYMAP.Digit3, KEYMAP.Digit4, KEYMAP.Digit5, KEYMAP.Digit6, KEYMAP.Digit7, KEYMAP.Digit8, KEYMAP.Digit9];
+      const digitShift = ')!@#$%^&*(';
+      for (let i = 0; i < 10; i++) {
+        m[String(i)] = { code: digits[i], shift: false };
+        m[digitShift[i]] = { code: digits[i], shift: true };
+      }
+      m[' '] = { code: KEYMAP.Space, shift: false };
+      m['\n'] = { code: KEYMAP.Enter, shift: false };
+      const punct = [
+        ['-', '_', KEYMAP.Minus], ['=', '+', KEYMAP.Equal],
+        ['[', '{', KEYMAP.BracketLeft], [']', '}', KEYMAP.BracketRight],
+        ['\\', '|', KEYMAP.Backslash], [';', ':', KEYMAP.Semicolon],
+        ["'", '"', KEYMAP.Quote], [',', '<', KEYMAP.Comma],
+        ['.', '>', KEYMAP.Period], ['/', '?', KEYMAP.Slash],
+        ['`', '~', KEYMAP.Backquote],
+      ];
+      for (const [lo, hi, code] of punct) {
+        m[lo] = { code, shift: false };
+        m[hi] = { code, shift: true };
+      }
+      return m;
+    })();
+    function sendChar(ch) {
+      const mapping = CHAR_MAP[ch];
+      if (!mapping) return;
+      if (mapping.shift) sendKey(KEYMAP.ShiftLeft, true);
+      sendKey(mapping.code, true);
+      sendKey(mapping.code, false);
+      if (mapping.shift) sendKey(KEYMAP.ShiftLeft, false);
+    }
+    function focusKeyboard() {
+      kbInput.value = '';
+      kbInput.focus();
+    }
+
     const listeners = [
       [canvas, 'pointermove', onPointerMove],
       [canvas, 'pointerdown', onPointerDown],
@@ -813,10 +1062,15 @@
       [canvas, 'auxclick', suppress],
       [canvas, 'contextmenu', suppress],
       [canvas, 'wheel', onWheel, { passive: false }],
+      [canvas, 'touchstart', onTouchStart, { passive: false }],
+      [canvas, 'touchmove', onTouchMove, { passive: false }],
+      [canvas, 'touchend', onTouchEnd],
+      [canvas, 'touchcancel', onTouchCancel],
       [window, 'keydown', onKey],
       [window, 'keyup', onKey],
       [window, 'blur', releaseAll],
       [document, 'visibilitychange', onVisibility],
+      [kbInput, 'input', onKbInput],
     ];
 
     function releaseAll() {
@@ -825,6 +1079,9 @@
       for (const b of heldButtons) sendButton(b, false);
       heldKeys.clear();
       heldButtons.clear();
+      cancelLongPress();
+      twoFingerPrevAvg = null;
+      if (document.activeElement === kbInput) kbInput.blur();
     }
     function enable() {
       if (enabled) return;
@@ -837,7 +1094,7 @@
       for (const [t, ev, fn, o] of listeners) t.removeEventListener(ev, fn, o);
       enabled = false;
     }
-    return { enable, disable, releaseAll, isEnabled: () => enabled };
+    return { enable, disable, releaseAll, isEnabled: () => enabled, focusKeyboard };
   }
 
   connect();

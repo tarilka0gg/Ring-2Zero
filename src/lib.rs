@@ -1,8 +1,11 @@
 // Library exports for screen-streamer
 
+#[cfg(feature = "audio_capture")]
+pub mod audio;
 pub mod auth;
 pub mod bandwidth;
 pub mod capture;
+pub mod clipboard;
 pub mod config;
 pub mod convert;
 pub mod diff;

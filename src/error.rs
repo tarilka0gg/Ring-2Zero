@@ -12,6 +12,7 @@ pub enum Error {
     PipeWire(String),
     ConsumerDisconnected,
     NoBackend,
+    Audio(String),
 }
 
 impl fmt::Display for Error {
@@ -27,6 +28,7 @@ impl fmt::Display for Error {
             Self::PipeWire(e) => write!(f, "PipeWire: {e}"),
             Self::ConsumerDisconnected => write!(f, "frame consumer disconnected"),
             Self::NoBackend => write!(f, "no capture backend available"),
+            Self::Audio(e) => write!(f, "Audio: {e}"),
         }
     }
 }

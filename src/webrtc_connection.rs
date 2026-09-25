@@ -14,12 +14,19 @@ use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCPeerConnection;
+#[cfg(feature = "audio_capture")]
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 pub struct WebRTCConnection {
     pub peer_connection: Arc<RTCPeerConnection>,
     pub data_channel: Arc<RTCDataChannel>,
     /// Remote-control channel, present only with `Config::control`.
     pub input_channel: Option<Arc<RTCDataChannel>>,
+    pub clipboard_channel: Option<Arc<RTCDataChannel>>,
+    /// Outbound desktop-audio track, present only with `Config::audio` (and
+    /// only when built with `--features audio_capture`).
+    #[cfg(feature = "audio_capture")]
+    pub audio_track: Option<Arc<TrackLocalStaticSample>>,
     data_channel_open_rx: Mutex<mpsc::Receiver<()>>,
 }
 
@@ -31,7 +38,13 @@ impl WebRTCConnection {
     /// Create a new WebRTC connection with low-latency settings
     /// Returns (connection, ice_channel)
     pub async fn new(config: &Config) -> Result<(Self, IceChannel)> {
-        let m = MediaEngine::default();
+        #[allow(unused_mut)]
+        let mut m = MediaEngine::default();
+        // Only needed to negotiate the audio track's Opus codec; the tile
+        // stream and every control channel are plain SCTP DataChannels and
+        // don't go through the MediaEngine at all.
+        #[cfg(feature = "audio_capture")]
+        m.register_default_codecs()?;
         let mut s = webrtc::api::setting_engine::SettingEngine::default();
 
         // Safari (and Chrome) obfuscate host ICE candidates behind a random
@@ -174,6 +187,23 @@ impl WebRTCConnection {
             None
         };
 
+        // Same trust boundary as input, same ordered/reliable reasoning —
+        // a dropped or reordered clipboard update should just never happen,
+        // there's no "next frame" to self-correct it like the tile stream.
+        let clipboard_channel = if config.control {
+            let init = RTCDataChannelInit {
+                ordered: Some(true),
+                ..Default::default()
+            };
+            Some(
+                peer_connection
+                    .create_data_channel("clipboard", Some(init))
+                    .await?,
+            )
+        } else {
+            None
+        };
+
         // Register on_open callback immediately to avoid race condition
         let (open_tx, open_rx) = mpsc::channel::<()>(1);
         data_channel.on_open(Box::new(move || {
@@ -181,11 +211,35 @@ impl WebRTCConnection {
             Box::pin(async {})
         }));
 
+        #[cfg(feature = "audio_capture")]
+        let audio_track = if config.audio {
+            let track = Arc::new(TrackLocalStaticSample::new(
+                webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability {
+                    mime_type: webrtc::api::media_engine::MIME_TYPE_OPUS.to_owned(),
+                    clock_rate: crate::audio::SAMPLE_RATE,
+                    channels: crate::audio::CHANNELS as u16,
+                    ..Default::default()
+                },
+                "audio".to_owned(),
+                "ring2zero".to_owned(),
+            ));
+            peer_connection
+                .add_track(Arc::clone(&track)
+                    as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>)
+                .await?;
+            Some(track)
+        } else {
+            None
+        };
+
         Ok((
             Self {
                 peer_connection,
                 data_channel,
                 input_channel,
+                clipboard_channel,
+                #[cfg(feature = "audio_capture")]
+                audio_track,
                 data_channel_open_rx: Mutex::new(open_rx),
             },
             IceChannel { ice_rx },

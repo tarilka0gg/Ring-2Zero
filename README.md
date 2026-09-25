@@ -110,13 +110,21 @@ no separate static file host, no system service beyond the binary itself.
   same virtual network.
 - **Remote control** (opt-in, `--control`) — drive the host's mouse and
   keyboard from the browser via the compositor's virtual-pointer and
-  virtual-keyboard protocols.
+  virtual-keyboard protocols. On a touch screen, a long-press sends a
+  right-click, a two-finger drag scrolls, and an on-screen-keyboard bridge
+  is one tap away.
+- **Bidirectional clipboard sync** (with `--control`) — copy on either
+  side, paste on the other, over its own DataChannel via
+  `wl-clipboard-rs` (works on GNOME/KDE too, not just wlroots).
+- **Desktop audio streaming** (opt-in, `--audio`, `--features
+  audio_capture`) — the host's audio output, encoded as Opus and played
+  back in the browser alongside the video.
 
 **Engineering**
 - **SIMD throughout the hot path** — AVX2/SSE2 for hashing, tile
   extraction, and BGRX→RGBA conversion, each with a portable scalar
   fallback.
-- **116 unit tests** covering the diff detector, tile merger, protocol
+- **131 unit tests** covering the diff detector, tile merger, protocol
   encode/decode, ACK tracking, ICE-server parsing, auth, and the
   remote-control input state machine, plus a Node-run behavioural test
   of the browser client's input capture. CI enforces `rustfmt` and
@@ -219,6 +227,9 @@ cargo build --release
 # With PipeWire support (GNOME, KDE, X11)
 cargo build --release --features pipewire_capture
 
+# With desktop audio streaming (needs libopus too)
+cargo build --release --features audio_capture
+
 # Optional: put `ring-2zero` on PATH instead of typing target/release/ring-2zero
 cargo install --path .
 ```
@@ -240,6 +251,7 @@ Everything is configured via environment variables plus a handful of CLI flags �
 | `RING2ZERO_MAX_FPS` | unset | Caps `target_fps`/`static_tile_fps`/`dynamic_tile_fps` uniformly to N (clamped to 1–1000) — a quick bandwidth-constrained testing knob. |
 | `RING2ZERO_ICE_SERVERS` | unset (host candidates only) | Comma-separated STUN/TURN servers: `stun:host:port`, `turn:user:pass@host:port[?transport=tcp]`, `turns:…`. Needed only across NAT — see [Remote access](#remote-access). The server hands the same list to the browser. A malformed entry stops startup with an error. |
 | `RING2ZERO_CONTROL` | unset | Same as `--control` — see [Remote control](#remote-control). |
+| `RING2ZERO_AUDIO` | unset | Same as `--audio` — stream desktop audio. Needs `--features audio_capture`; ignored (with a startup warning) otherwise. |
 | `RING2ZERO_OUTPUT` | unset (first output) | Capture this named output (e.g. `DP-1`, `eDP-1` — `wlr-randr` or `niri msg outputs` list yours) on a multi-monitor machine, instead of whichever one the compositor happens to advertise first. Falls back to the first output, with a warning naming what was actually available, if the name doesn't match. Only takes effect on the `wlr-screencopy` backend for now. |
 
 CLI flags:
@@ -249,6 +261,7 @@ CLI flags:
 | `--no-adaptive` | Skip the startup CPU benchmark, use the default `merge_gap=0`. |
 | `--debug` | Verbose per-tile/per-frame stats every 100 frames, plus per-frame send stats (log level `debug` for this crate). |
 | `--control` | Allow clients to control this machine's mouse and keyboard — see [Remote control](#remote-control). |
+| `--audio` | Stream desktop audio (needs `--features audio_capture`). |
 | `-h`, `--help` | Full flag/env var reference, paged through `less`/`$PAGER` on a real terminal. |
 
 Logging goes through `env_logger`: the default is `warn,dtls=error,webrtc_ice=error,screen_streamer=info` (the two crate-specific overrides silence upstream WebRTC noise — a benign warning per TLS extension in every handshake, and per-candidate ICE chatter — that would otherwise bury the useful lines); `RUST_LOG` overrides it entirely. `RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug` gives verbose ICE/mDNS connectivity diagnostics when troubleshooting a connection that won't complete.
@@ -338,10 +351,18 @@ mouse, wheel and keyboard input over the picture is sent to the host.
 - Not currently implemented for the PipeWire capture backend's compositor
   targets outside wlroots — the virtual-input protocols above are
   wlroots-specific.
+- On a touch device: a single-finger long-press (550ms, cancelled by
+  moving more than 10 backing-store pixels) sends a right-click, a
+  two-finger drag sends a natural-direction scroll, and a **⌨** button
+  (shown once control is on) opens the on-screen keyboard.
+- The same `--control` gate also enables bidirectional clipboard sync —
+  copying on the host pushes to the browser's clipboard and vice versa,
+  polled every 700ms on both sides (no cross-toolkit "clipboard changed"
+  event exists) and deduped against the last value each side itself set.
 
 **Security:** anyone with the token gets full keyboard and mouse access to
-your session. It's off by default; if you enable it, keep the port
-reachable only over a VPN.
+your session, and with it, clipboard read/write. It's off by default; if
+you enable it, keep the port reachable only over a VPN.
 
 ## Wire protocol
 
@@ -361,6 +382,12 @@ are the two implementations that actually have to agree on it.
 - **`input` DataChannel** (ordered, reliable; only exists with
   `--control`) carries one binary pointer/wheel/keyboard event per
   message.
+- **`clipboard` DataChannel** (ordered, reliable; only exists with
+  `--control`) carries the new clipboard text as raw UTF-8 bytes, either
+  direction, one message per change.
+- **Audio track** (only with `--audio`) — a standard WebRTC RTP audio
+  track, Opus-encoded, negotiated through the normal SDP offer/answer
+  alongside the DataChannels; no custom framing.
 
 The protocol changed in v0.400.0 (auth moved out of the URL, a `hello`
 message was added) — an older cached copy of `client.html` won't connect
@@ -424,6 +451,9 @@ version:
   `libdbus-1` dev headers to build, and a running
   `xdg-desktop-portal` + a compositor-specific portal backend
   (`xdg-desktop-portal-wlr`, `-gnome`, `-kde`, …) to run.
+- **No audio, or `--audio` warns it was ignored** — the binary needs to be
+  built with `--features audio_capture` (needs `libpipewire-0.3` and
+  `libopus` dev headers) for the flag to do anything at all.
 
 ## Dependencies
 
@@ -437,6 +467,11 @@ System libraries required:
 Optional (for `--features pipewire_capture`):
 - `libpipewire-0.3` — PipeWire stream
 - `libdbus-1` — xdg-desktop-portal D-Bus handshake
+
+Optional (for `--features audio_capture`):
+- `libpipewire-0.3` — records the default sink's monitor directly, no
+  portal/D-Bus involved
+- `libopus` — Opus encoding
 
 Plus a C compiler (`clang`, pinned by `.cargo/config.toml`) and a recent
 stable Rust toolchain — `install.sh` installs both if missing.
@@ -460,6 +495,8 @@ src/
 ├── transport.rs             — ACK tracking + framing onto the DataChannel
 ├── protocol.rs               — binary wire format (DataChannel messages), pure encode/decode
 ├── input.rs                — remote control: virtual pointer/keyboard injection (--control)
+├── clipboard.rs             — bidirectional clipboard sync over wl-clipboard-rs (--control)
+├── audio.rs                 — Opus encode + RTP track writer (--features audio_capture)
 ├── capture/
 │   ├── mod.rs               — backend auto-detection
 │   ├── wlr.rs                — wlr-screencopy (DMA-BUF + SHM fallback)
@@ -473,7 +510,8 @@ src/
 ├── config.rs                     — Config struct + CPU benchmark cache
 └── shm.rs                         — shared memory buffer (memfd), used by the wlr backend
 src_c/
-└── pw_capture.c            — PipeWire + xdg-desktop-portal D-Bus C helper
+├── pw_capture.c            — PipeWire + xdg-desktop-portal D-Bus C helper
+└── pw_audio_capture.c      — PipeWire default-sink-monitor audio capture (no portal)
 docs/
 ├── DEVELOPMENT.md          — full architecture, config/protocol reference, algorithms, troubleshooting
 └── client-examples/
@@ -486,7 +524,7 @@ For contributor guidelines (PR checklist, scope, bug reports) see [CONTRIBUTING.
 ## Testing
 
 ```bash
-cargo test --release                          # 116 unit tests: diff, merge, protocol, ACK tracking, auth, input state, …
+cargo test --release                          # 131 unit tests: diff, merge, protocol, ACK tracking, auth, input state, …
 cargo test --release --features pipewire_capture
 cargo clippy --all-targets -- -D warnings     # enforced in CI, no warnings allowed
 cargo fmt --check                              # enforced in CI

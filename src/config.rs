@@ -44,6 +44,11 @@ pub struct Config {
     /// the host's mouse and keyboard. Off by default: anyone holding the
     /// token gets full input access to the desktop.
     pub control: bool,
+    /// `--audio` / RING2ZERO_AUDIO — stream the host's desktop audio (the
+    /// default sink's monitor) alongside the screen. Only has an effect
+    /// when built with `--features audio_capture`; off by default since
+    /// it's the operator's system audio going out over the network.
+    pub audio: bool,
 }
 
 impl Default for Config {
@@ -68,6 +73,7 @@ impl Default for Config {
             ice_ipv4_only: std::env::var("RING2ZERO_IPV4_ONLY").is_ok(),
             ice_servers: Vec::new(),
             control: std::env::var("RING2ZERO_CONTROL").is_ok(),
+            audio: std::env::var("RING2ZERO_AUDIO").is_ok(),
         };
         config.apply_max_fps_override();
         config

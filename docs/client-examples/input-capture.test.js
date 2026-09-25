@@ -5,12 +5,28 @@ const html = fs.readFileSync(require('path').join(__dirname, 'client.html'), 'ut
 const src = html.slice(html.indexOf('function createInputCapture'), html.indexOf('connect();\n</script>'));
 function target() { const l = {}; return { l, addEventListener(e, f) { (l[e] ||= []).push(f); }, removeEventListener(e, f) { l[e] = (l[e] || []).filter(x => x !== f); }, fire(e, ev) { (l[e] || []).forEach(f => f({ type: e, preventDefault() { this.pd = true; }, ...ev })); } }; }
 const win = target(), doc = target(); doc.visibilityState = 'visible';
-let rafs = []; const ctx = { window: win, document: doc, requestAnimationFrame: f => (rafs.push(f), rafs.length), cancelAnimationFrame: id => { rafs[id - 1] = null; } };
+function fakeInput() {
+  return Object.assign(target(), {
+    value: '', style: {}, focus() { doc.activeElement = this; }, blur() { if (doc.activeElement === this) doc.activeElement = null; },
+  });
+}
+doc.body = { appendChild() {} };
+const createdInputs = [];
+doc.createElement = () => { const i = fakeInput(); createdInputs.push(i); return i; };
+let rafs = []; const timers = [];
+const ctx = {
+  window: win, document: doc,
+  requestAnimationFrame: f => (rafs.push(f), rafs.length), cancelAnimationFrame: id => { rafs[id - 1] = null; },
+  setTimeout: (f, ms) => (timers.push({ f, ms, fired: false }), timers.length),
+  clearTimeout: id => { if (timers[id - 1]) timers[id - 1].fired = true; },
+};
 const createInputCapture = new Function(...Object.keys(ctx), src + '; return createInputCapture;')(...Object.values(ctx));
-const canvas = Object.assign(target(), { setPointerCapture() {} });
+const canvas = Object.assign(target(), { setPointerCapture() {}, getBoundingClientRect: () => ({ left: 0, top: 0 }) });
 const sent = []; const hex = b => Buffer.from(b).toString('hex');
 const cap = createInputCapture({ canvas, getGeometry: () => ({ dst: { x: 100, y: 0, w: 800, h: 450 }, dpr: 2 }), send: b => sent.push(hex(b)) });
 const runRaf = () => { const r = rafs; rafs = []; r.forEach(f => f && f()); };
+const runTimer = () => { const t = timers.pop(); if (t && !t.fired) t.f(); };
+const touch = (x, y) => ({ clientX: x, clientY: y });
 
 canvas.fire('pointermove', { offsetX: 100, offsetY: 100 }); assert.equal(sent.length, 0, 'disabled: nothing sent');
 cap.enable();
@@ -39,6 +55,37 @@ assert.deepEqual(sent, ['030000d0ff']); sent.length = 0;
 win.fire('blur', {});
 assert.deepEqual(sent.sort(), ['020000', '020200', '041e0000', '042a0000'].sort()); sent.length = 0;
 win.fire('keyup', { code: 'KeyA' }); assert.equal(sent.length, 0, 'no release for an unheld key');
+
+// --- touch: long-press → right click ---
+canvas.fire('touchstart', { touches: [touch(250, 112.5)] });
+assert.equal(sent.length, 0, 'long-press: nothing sent before the timer fires');
+runTimer();
+assert.deepEqual(sent, ['020201'], 'long-press: button-2 down'); sent.length = 0;
+canvas.fire('touchend', { touches: [] });
+assert.deepEqual(sent, ['020200'], 'long-press: button-2 up on release'); sent.length = 0;
+
+// --- touch: movement past the threshold cancels the long-press, no press/release sent ---
+canvas.fire('touchstart', { touches: [touch(250, 112.5)] });
+canvas.fire('touchmove', { touches: [touch(400, 112.5)] }); // well past the 10-unit threshold
+runTimer(); // the (cleared) timer must not fire
+assert.equal(sent.length, 0, 'cancelled long-press: no button-2 down');
+canvas.fire('touchend', { touches: [] });
+assert.equal(sent.length, 0, 'cancelled long-press: no button-2 up either');
+
+// --- touch: two-finger scroll, natural direction ---
+canvas.fire('touchstart', { touches: [touch(200, 100), touch(220, 100)] });
+canvas.fire('touchmove', { touches: [touch(200, 80), touch(220, 80)] }); // fingers moved up 20 CSS px
+assert.deepEqual(sent, ['0300002800'], 'two-finger scroll: fingers up → scroll down (positive dy)'); sent.length = 0;
+canvas.fire('touchend', { touches: [] });
+
+// --- mobile keyboard bridge ---
+const kb = createdInputs[0];
+kb.fire('input', { target: { value: 'Ab' } });
+assert.deepEqual(sent, ['042a0001', '041e0001', '041e0000', '042a0000', '04300001', '04300000'], 'keyboard bridge: types "Ab"');
+sent.length = 0;
+kb.fire('input', { inputType: 'deleteContentBackward', target: { value: '' } });
+assert.deepEqual(sent, ['040e0001', '040e0000'], 'keyboard bridge: backspace'); sent.length = 0;
+
 // disable detaches listeners
 cap.disable(); win.fire('keydown', { code: 'KeyB' }); assert.equal(sent.length, 0);
 // keymap spot checks against linux/input-event-codes.h
