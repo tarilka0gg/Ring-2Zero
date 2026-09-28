@@ -245,16 +245,25 @@
     rafId = null;
     if (!offscreen) return;
 
-    for (const { bitmap, x, y, w, h } of pending) {
-      offCtx.drawImage(bitmap, x, y, w, h);
-      bitmap.close();
-    }
-    pending.length = 0;
+    // A throw anywhere in here (e.g. a lost/detached canvas context after
+    // the tab was backgrounded by an on-screen keyboard on mobile) would
+    // otherwise silently kill every future frame with nothing visible to
+    // debug on a phone with no attached devtools — surface it on-page.
+    try {
+      for (const { bitmap, x, y, w, h } of pending) {
+        offCtx.drawImage(bitmap, x, y, w, h);
+        bitmap.close();
+      }
+      pending.length = 0;
 
-    if (mode === 'fit') {
-      dispCtx.clearRect(0, 0, dispCanvas.width, dispCanvas.height);
+      if (mode === 'fit') {
+        dispCtx.clearRect(0, 0, dispCanvas.width, dispCanvas.height);
+      }
+      dispCtx.drawImage(offscreen, dst.x, dst.y, dst.w, dst.h);
+    } catch (e) {
+      console.error('renderFrame failed:', e);
+      statusText.textContent = 'Render error: ' + errMsg(e);
     }
-    dispCtx.drawImage(offscreen, dst.x, dst.y, dst.w, dst.h);
   }
 
   function applyMode() {
@@ -307,18 +316,33 @@
     applyMode();
   });
 
-  window.addEventListener('resize', () => {
-    requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
-  });
+  // The on-screen keyboard's open/close is an animated transition (~250-
+  // 300ms), and the layout/visual viewport can each settle at a different
+  // point during it — a single resize-triggered recompute can land mid-
+  // animation and read a transient (wrong) size, leaving the canvas stuck
+  // at that size once the animation actually finishes with nothing left to
+  // trigger another recompute. Instead of trying to catch the one "right"
+  // moment, every resize-ish signal schedules a short burst of retries;
+  // applyMode() always re-reads the current rect, so whichever of these
+  // lands after the animation has actually settled corrects it.
+  function settleApplyMode() {
+    if (mode !== 'fit') return;
+    requestAnimationFrame(applyMode);
+    setTimeout(applyMode, 150);
+    setTimeout(applyMode, 400);
+  }
+  window.addEventListener('resize', settleApplyMode);
   // `interactive-widget=resizes-content` above makes most mobile browsers
   // fire a plain `resize` when the on-screen keyboard opens/closes, but not
   // all of them do reliably — visualViewport's own resize event is the one
   // guaranteed to fire either way, so both are wired to be safe.
   if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', () => {
-      requestAnimationFrame(() => { if (mode === 'fit') applyMode(); });
-    });
+    window.visualViewport.addEventListener('resize', settleApplyMode);
   }
+  // Directly tied to the keyboard actually closing (our own hidden bridge
+  // input losing focus), independent of whichever viewport event did or
+  // didn't fire for it.
+  window.addEventListener('r2z-keyboard-hide', settleApplyMode);
 
   // Stringifies an error/rejection value for display: prefer `.message` when
   // present, otherwise fall back to a safe String() conversion (handles
@@ -988,6 +1012,13 @@
       }
       e.target.value = '';
     }
+    // Fires whenever the on-screen keyboard is dismissed (our own hidden
+    // input losing focus); the outer page listens for this to re-settle
+    // the canvas size, independent of whether a viewport resize event also
+    // fired for it (see settleApplyMode in the outer script).
+    function onKbBlur() {
+      window.dispatchEvent(new Event('r2z-keyboard-hide'));
+    }
     const CHAR_MAP = (() => {
       const m = {};
       const row = (lower, upper, base) => {
@@ -1051,6 +1082,7 @@
       [window, 'blur', releaseAll],
       [document, 'visibilitychange', onVisibility],
       [kbInput, 'input', onKbInput],
+      [kbInput, 'blur', onKbBlur],
     ];
 
     function releaseAll() {
