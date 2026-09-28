@@ -347,7 +347,10 @@ mouse, wheel and keyboard input over the picture is sent to the host.
 - On a touch device: a single-finger long-press (550ms, cancelled by
   moving more than 10 backing-store pixels) sends a right-click, a
   two-finger drag sends a natural-direction scroll, and a **⌨** button
-  (shown once control is on) opens the on-screen keyboard.
+  (shown once control is on) opens the on-screen keyboard. **Known issue**:
+  on some mobile browsers the picture can go black or stay the wrong size
+  after the on-screen keyboard closes — see
+  [Troubleshooting](#troubleshooting).
 - The same `--control` gate also enables bidirectional clipboard sync —
   copying on the host pushes to the browser's clipboard and vice versa,
   polled every 700ms on both sides (no cross-toolkit "clipboard changed"
@@ -441,6 +444,13 @@ version:
   `libdbus-1` dev headers to build, and a running
   `xdg-desktop-portal` + a compositor-specific portal backend
   (`xdg-desktop-portal-wlr`, `-gnome`, `-kde`, …) to run.
+- **Mobile: picture goes black or stays the wrong size after the
+  on-screen keyboard closes** — under investigation, seen on at least one
+  Android Chrome build. The page retries resizing itself for ~400ms after
+  the keyboard closes and surfaces any render exception directly in the
+  status bar (`Render error: …`) instead of failing silently — if you hit
+  this, that text is the most useful thing to report. A full page reload
+  recovers it in the meantime.
 
 ## Dependencies
 
