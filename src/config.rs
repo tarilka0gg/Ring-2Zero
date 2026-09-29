@@ -18,7 +18,6 @@ pub struct Config {
     pub webp_quality_low: f32,
     pub webp_quality_high: f32,
     pub merge_gap: u32,
-    pub priority_history_window: usize,
     pub priority_frequency_weight: f32,
     pub priority_speed_weight: f32,
     pub priority_center_weight: f32,
@@ -38,6 +37,13 @@ pub struct Config {
     /// would break connectivity outright on an IPv6-only path if it were
     /// unconditional.
     pub ice_ipv4_only: bool,
+    /// RING2ZERO_ICE_SERVERS — STUN/TURN servers (see `ice.rs`), parsed and
+    /// validated by main.rs at startup. Empty: host candidates only.
+    pub ice_servers: Vec<crate::ice::IceServer>,
+    /// `--control` / RING2ZERO_CONTROL — let authenticated clients drive
+    /// the host's mouse and keyboard. Off by default: anyone holding the
+    /// token gets full input access to the desktop.
+    pub control: bool,
 }
 
 impl Default for Config {
@@ -49,7 +55,6 @@ impl Default for Config {
             webp_quality_low: 1.0,
             webp_quality_high: 10.0,
             merge_gap: 0,
-            priority_history_window: 30,
             priority_frequency_weight: 0.5,
             priority_speed_weight: 0.3,
             priority_center_weight: 0.2,
@@ -61,6 +66,8 @@ impl Default for Config {
             tls_key_path: std::env::var("RING2ZERO_TLS_KEY").ok(),
             ice_interface: std::env::var("RING2ZERO_ICE_INTERFACE").ok(),
             ice_ipv4_only: std::env::var("RING2ZERO_IPV4_ONLY").is_ok(),
+            ice_servers: Vec::new(),
+            control: std::env::var("RING2ZERO_CONTROL").is_ok(),
         };
         config.apply_max_fps_override();
         config
@@ -83,11 +90,9 @@ impl Config {
     /// state. Returns `None` for a value that doesn't parse as a `u64`.
     fn parse_max_fps(input: &str) -> Option<std::num::NonZeroU64> {
         let fps = input.parse::<u64>().ok()?;
-        // Clamped to 1000: frame_duration() is `1000 / fps` in whole
-        // milliseconds, so anything above 1000 would truncate to a 0ms
-        // duration, turning the cap into an uncapped busy-loop instead of
-        // throttling anything. Clamped to a minimum of 1 since 0 isn't a
-        // valid NonZeroU64.
+        // Clamped to 1000: above that a frame budget is under a millisecond,
+        // which the capture/encode loop can't meet anyway — it would just
+        // spin. Clamped to a minimum of 1 since 0 isn't a valid NonZeroU64.
         std::num::NonZeroU64::new(fps.clamp(1, 1000))
     }
 
@@ -95,12 +100,16 @@ impl Config {
     /// a quick bandwidth-constrained testing knob, without touching the
     /// adaptive-quality machinery.
     fn apply_max_fps_override(&mut self) {
-        let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") else { return };
-        let Some(nz) = Self::parse_max_fps(&fps_str) else { return };
+        let Ok(fps_str) = std::env::var("RING2ZERO_MAX_FPS") else {
+            return;
+        };
+        let Some(nz) = Self::parse_max_fps(&fps_str) else {
+            return;
+        };
         self.target_fps = nz;
         self.static_tile_fps = nz;
         self.dynamic_tile_fps = nz;
-        println!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {}", nz.get());
+        log::info!("[RING2ZERO_MAX_FPS] capped all FPS knobs to {}", nz.get());
     }
 
     fn generate_random_token() -> String {
@@ -121,16 +130,14 @@ impl Config {
     }
 
     pub fn frame_duration(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(1000 / self.target_fps.get())
+        // Nanosecond precision: whole milliseconds would turn 60 FPS into
+        // 16ms (62.5 FPS) and drift further for any rate not dividing 1000.
+        std::time::Duration::from_nanos(1_000_000_000 / self.target_fps.get())
     }
 
-    /// Calculate tile dimensions for given frame size
-    /// Returns (tile_width, tile_height, tiles_y)
-    pub fn calculate_tile_dimensions(&self, width: u32, height: u32) -> (u32, u32, u32) {
-        let tile_width = width / self.tiles_x;
-        let tile_height = tile_width * height / width;
-        let tiles_y = (height + tile_height - 1) / tile_height;
-        (tile_width, tile_height, tiles_y)
+    /// The tile grid for a `width`×`height` frame.
+    pub fn grid(&self, width: u32, height: u32) -> crate::tile::Grid {
+        crate::tile::Grid::new(self.tiles_x, width, height)
     }
 
     /// Auto-detect optimal merge_gap based on CPU encoding speed
@@ -139,26 +146,38 @@ impl Config {
 
         // Try to load from cache first
         if let Some(cached_gap) = Self::load_cached_merge_gap() {
-            println!("✅ [Adaptive] Using cached benchmark result: merge_gap={}", cached_gap);
+            log::info!(
+                "[Adaptive] Using cached benchmark result: merge_gap={}",
+                cached_gap
+            );
             config.merge_gap = cached_gap;
             return config;
         }
 
-        println!("🔍 [Adaptive] Running CPU benchmark (first run or cache invalid)...");
+        log::info!("[Adaptive] Running CPU benchmark (first run or cache invalid)...");
 
         // Benchmark encoding speed
         let ms_per_tile = Self::benchmark_encoding_speed();
 
         // Determine merge_gap based on performance
         config.merge_gap = if ms_per_tile > 20.0 {
-            println!("🐌 [Adaptive] Slow CPU detected ({:.1}ms/tile) → merge_gap=3 (aggressive merging)", ms_per_tile);
-            3  // Aggressive: reduces tiles by 60-80%
+            log::info!(
+                "[Adaptive] Slow CPU detected ({:.1}ms/tile) → merge_gap=3 (aggressive merging)",
+                ms_per_tile
+            );
+            3 // Aggressive: reduces tiles by 60-80%
         } else if ms_per_tile > 10.0 {
-            println!("⚡ [Adaptive] Medium CPU detected ({:.1}ms/tile) → merge_gap=1 (moderate merging)", ms_per_tile);
-            1  // Moderate: reduces tiles by 30-50%
+            log::info!(
+                "[Adaptive] Medium CPU detected ({:.1}ms/tile) → merge_gap=1 (moderate merging)",
+                ms_per_tile
+            );
+            1 // Moderate: reduces tiles by 30-50%
         } else {
-            println!("🚀 [Adaptive] Fast CPU detected ({:.1}ms/tile) → merge_gap=0 (no merging)", ms_per_tile);
-            0  // Minimal: keeps most tiles separate for quality
+            log::info!(
+                "[Adaptive] Fast CPU detected ({:.1}ms/tile) → merge_gap=0 (no merging)",
+                ms_per_tile
+            );
+            0 // Minimal: keeps most tiles separate for quality
         };
 
         // Save to cache
@@ -227,26 +246,34 @@ impl Config {
 
         // Check CPU model matches
         if cache.cpu_model != current_cpu {
-            println!("  Cache invalid: CPU changed ({} → {})", cache.cpu_model, current_cpu);
+            log::warn!(
+                "Cache invalid: CPU changed ({} → {})",
+                cache.cpu_model,
+                current_cpu
+            );
             return None;
         }
 
         // Check binary not recompiled
         if cache.binary_mtime != current_mtime {
-            println!("  Cache invalid: Binary recompiled");
+            log::warn!("Cache invalid: Binary recompiled");
             return None;
         }
 
         // Check tiles_x hasn't changed
         if cache.tiles_x != current_tiles_x {
-            println!("  Cache invalid: tiles_x changed ({} → {})", cache.tiles_x, current_tiles_x);
+            log::warn!(
+                "Cache invalid: tiles_x changed ({} → {})",
+                cache.tiles_x,
+                current_tiles_x
+            );
             return None;
         }
 
         // Check cache age < 7 days
         let age_days = (now - cache.timestamp) / 86400;
         if age_days > 7 {
-            println!("  Cache invalid: Too old ({} days)", age_days);
+            log::warn!("  Cache invalid: Too old ({} days)", age_days);
             return None;
         }
 
@@ -270,9 +297,9 @@ impl Config {
 
         if let Ok(json) = serde_json::to_string_pretty(&cache) {
             if let Err(e) = std::fs::write(&cache_path, json) {
-                eprintln!("⚠️  Failed to save benchmark cache: {}", e);
+                log::error!("Failed to save benchmark cache: {}", e);
             } else {
-                println!("✅ Benchmark cached to {}", cache_path.display());
+                log::info!("Benchmark cached to {}", cache_path.display());
             }
         }
     }
@@ -283,19 +310,24 @@ impl Config {
         // Use actual runtime tile dimensions based on Config::default().tiles_x
         // This ensures benchmark matches production tile sizes
         let config = Config::default();
-        let width = 1920u32;  // Standard 1080p width
+        let width = 1920u32; // Standard 1080p width
         let height = 1080u32;
         let tile_width = width / config.tiles_x;
         let tile_height = tile_width * height / width;
 
-        println!("  Creating test data...");
-        println!("  Tile dimensions: {}×{}px (based on tiles_x={})", tile_width, tile_height, config.tiles_x);
+        log::debug!("Creating test data...");
+        log::debug!(
+            "Tile dimensions: {}×{}px (based on tiles_x={})",
+            tile_width,
+            tile_height,
+            config.tiles_x
+        );
         let test_data = vec![128u8; (tile_width * tile_height * 4) as usize];
 
-        println!("  Warm-up (2 iterations)...");
+        log::debug!("Warm-up (2 iterations)...");
         // Warm-up (fill CPU cache)
         for i in 0..2 {
-            println!("    Warm-up iteration {}", i + 1);
+            log::debug!("Warm-up iteration {}", i + 1);
             let _result = fast_webp::encode_rgba(
                 &test_data,
                 tile_width,
@@ -305,14 +337,14 @@ impl Config {
                     ..Default::default()
                 },
             );
-            println!("    Done");
+            log::debug!("Done");
         }
 
-        println!("  Running benchmark (10 iterations)...");
+        log::debug!("Running benchmark (10 iterations)...");
         // Actual benchmark (10 iterations for stability)
         let start = Instant::now();
         for i in 0..10 {
-            println!("    Benchmark iteration {}", i + 1);
+            log::debug!("Benchmark iteration {}", i + 1);
             let _result = fast_webp::encode_rgba(
                 &test_data,
                 tile_width,
@@ -323,11 +355,11 @@ impl Config {
                 },
             );
         }
-        let elapsed = start.elapsed().as_secs_f32() * 1000.0;  // Convert to ms
+        let elapsed = start.elapsed().as_secs_f32() * 1000.0; // Convert to ms
 
-        println!("  Benchmark complete: {:.2}ms total", elapsed);
+        log::debug!("Benchmark complete: {:.2}ms total", elapsed);
 
-        elapsed / 10.0  // Average ms per tile
+        elapsed / 10.0 // Average ms per tile
     }
 }
 
@@ -358,31 +390,49 @@ mod tests {
     }
 
     #[test]
-    fn calculate_tile_dimensions_matches_expected_grid() {
-        let config = Config { tiles_x: 20, ..Config::default() };
-        let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(1920, 1080);
-        assert_eq!(tile_width, 96); // 1920 / 20
-        assert_eq!(tile_height, 54); // 96 * 1080 / 1920
-        assert_eq!(tiles_y, 20); // ceil(1080 / 54)
+    fn frame_duration_matches_target_fps() {
+        let config = Config {
+            target_fps: std::num::NonZeroU64::new(50).unwrap(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.frame_duration(),
+            std::time::Duration::from_millis(20)
+        );
     }
 
     #[test]
-    fn frame_duration_matches_target_fps() {
-        let config = Config { target_fps: std::num::NonZeroU64::new(50).unwrap(), ..Config::default() };
-        assert_eq!(config.frame_duration(), std::time::Duration::from_millis(20));
+    fn frame_duration_does_not_round_60_fps_to_whole_milliseconds() {
+        let config = Config {
+            target_fps: std::num::NonZeroU64::new(60).unwrap(),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.frame_duration(),
+            std::time::Duration::from_nanos(16_666_666)
+        );
     }
 
     #[test]
     fn generate_random_token_has_the_expected_format() {
         let token = Config::generate_random_token();
-        assert_eq!(token.len(), 32, "16 random bytes hex-encoded should be 32 chars");
-        assert!(token.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(
+            token.len(),
+            32,
+            "16 random bytes hex-encoded should be 32 chars"
+        );
+        assert!(token
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
     }
 
     #[test]
     fn generate_random_token_is_not_trivially_repeated() {
         // Not a real randomness test, just a smoke check against an
         // accidental constant/fallback path always returning the same value.
-        assert_ne!(Config::generate_random_token(), Config::generate_random_token());
+        assert_ne!(
+            Config::generate_random_token(),
+            Config::generate_random_token()
+        );
     }
 }

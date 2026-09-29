@@ -1,3 +1,9 @@
+// Internal diagnostic tool (bench_tools feature only): some helper
+// methods/fields exist for output modes or metrics not every run path
+// exercises. Per CONTRIBUTING.md this file stays minimal, so unused
+// bits are silenced rather than pruned.
+#![allow(dead_code)]
+
 /// Advanced Performance Benchmark with Detailed Metrics
 /// Ring-2Zero v0.149+ - Comprehensive performance analysis
 ///
@@ -5,13 +11,11 @@
 /// 1. Performance: Throughput (MB/s, tiles/s), Latency percentiles (p50/p95/p99)
 /// 2. Pipeline: Hash breakdown, Zero-copy efficiency, Parallel speedup
 /// 3. Quality: Compression ratio, Encoding efficiency, Cache effectiveness
-
 use screen_streamer::config::Config;
 use screen_streamer::diff::DiffDetector;
 use screen_streamer::encoder::TileMerger;
 use screen_streamer::frame::Frame;
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::time::Instant;
 
 // ============================================================================
 // Frame Generation (same as detailed_bench)
@@ -196,12 +200,13 @@ fn benchmark_scenario_advanced(
     let width = 1920u32;
     let height = 1080u32;
 
-    let (tile_width, tile_height, tiles_y) = config.calculate_tile_dimensions(width, height);
+    let grid = config.grid(width, height);
+    let (tile_width, tile_height, _tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
 
     // Run multiple times and collect results
     let mut run_results = Vec::new();
 
-    for i in 0..runs {
+    for _i in 0..runs {
         let mut cfg = config.clone();
         cfg.debug_mode = false; // Явно вимикаємо debug
         let mut diff_detector = DiffDetector::new(cfg.clone());
@@ -219,7 +224,7 @@ fn benchmark_scenario_advanced(
         let mut total_tiles_after = 0usize;
         let mut total_cache_hits = 0usize;
 
-        let overall_start = Instant::now();
+        let _overall_start = Instant::now();
 
         for frame_num in 1..=frames {
             let rgba = generate_scenario_frame(width, height, frame_num, scenario);
@@ -238,15 +243,7 @@ fn benchmark_scenario_advanced(
 
             // Tile merging
             let t1 = Instant::now();
-            let merged_tiles = tile_merger.merge(
-                &changed_tiles,
-                config.tiles_x,
-                tiles_y,
-                tile_width,
-                tile_height,
-                width,
-                height,
-            );
+            let merged_tiles = tile_merger.merge(&changed_tiles, &grid);
             total_merge_ms += t1.elapsed().as_secs_f64() * 1000.0;
 
             total_tiles_after += merged_tiles.len();
@@ -282,7 +279,6 @@ fn benchmark_scenario_advanced(
             total_tiles_after,
             total_cache_hits,
         ));
-
     }
 
     println!(" ✓");
@@ -337,7 +333,8 @@ fn benchmark_scenario_advanced(
     let thread_efficiency = parallel_speedup / num_workers as f64;
 
     // Compression metrics (use actual tile dimensions)
-    let raw_bytes = (avg_tiles_after as f64 * tile_width as f64 * tile_height as f64 * 4.0) as usize;
+    let raw_bytes =
+        (avg_tiles_after as f64 * tile_width as f64 * tile_height as f64 * 4.0) as usize;
     let compressed_bytes = (raw_bytes as f64 / 10.0) as usize; // ~10:1 WebP compression
 
     // For percentiles, use estimated distribution
@@ -397,7 +394,8 @@ fn benchmark_scenario_advanced(
 
 fn print_result(result: &BenchmarkResult) {
     println!("\n╔═══════════════════════════════════════════════════════════════╗");
-    println!("║ {} {:<55} ║",
+    println!(
+        "║ {} {:<55} ║",
         match result.scenario.as_str() {
             "STATIC" => "🟢",
             "MODERATE" => "🟡",
@@ -414,47 +412,80 @@ fn print_result(result: &BenchmarkResult) {
     // Performance Metrics
     println!("║ 📊 PERFORMANCE METRICS                                        ║");
     println!("╟───────────────────────────────────────────────────────────────╢");
-    println!("║   Throughput:    {:>7.1} MB/s  │  {:>7.0} tiles/s            ║",
-        result.performance.mb_per_sec, result.performance.tiles_per_sec);
-    println!("║   Frame rate:    {:>7.0} FPS                                  ║",
-        result.performance.frames_per_sec);
+    println!(
+        "║   Throughput:    {:>7.1} MB/s  │  {:>7.0} tiles/s            ║",
+        result.performance.mb_per_sec, result.performance.tiles_per_sec
+    );
+    println!(
+        "║   Frame rate:    {:>7.0} FPS                                  ║",
+        result.performance.frames_per_sec
+    );
     println!("║                                                               ║");
-    println!("║   Latency (μs):  avg={:>7.0}  min={:>7.0}  max={:>7.0}      ║",
-        result.performance.latency_avg, result.performance.latency_min, result.performance.latency_max);
-    println!("║   Percentiles:   p50={:>7.0}  p95={:>7.0}  p99={:>7.0}      ║",
-        result.performance.latency_p50, result.performance.latency_p95, result.performance.latency_p99);
+    println!(
+        "║   Latency (μs):  avg={:>7.0}  min={:>7.0}  max={:>7.0}      ║",
+        result.performance.latency_avg,
+        result.performance.latency_min,
+        result.performance.latency_max
+    );
+    println!(
+        "║   Percentiles:   p50={:>7.0}  p95={:>7.0}  p99={:>7.0}      ║",
+        result.performance.latency_p50,
+        result.performance.latency_p95,
+        result.performance.latency_p99
+    );
 
     // Pipeline Breakdown
     println!("╟───────────────────────────────────────────────────────────────╢");
     println!("║ ⚙️  PIPELINE BREAKDOWN                                         ║");
     println!("╟───────────────────────────────────────────────────────────────╢");
-    println!("║   Diff detection:    {:>6.3} ms/frame                         ║",
-        result.pipeline.diff_time_ms);
-    println!("║   Tile merging:      {:>6.3} ms/frame                         ║",
-        result.pipeline.merge_time_ms);
-    println!("║   WebP encoding:     {:>6.3} ms/frame                         ║",
-        result.pipeline.encode_time_ms);
+    println!(
+        "║   Diff detection:    {:>6.3} ms/frame                         ║",
+        result.pipeline.diff_time_ms
+    );
+    println!(
+        "║   Tile merging:      {:>6.3} ms/frame                         ║",
+        result.pipeline.merge_time_ms
+    );
+    println!(
+        "║   WebP encoding:     {:>6.3} ms/frame                         ║",
+        result.pipeline.encode_time_ms
+    );
     println!("║                                                               ║");
-    println!("║   Parallel speedup:  {:>5.2}× ({} workers)                    ║",
-        result.pipeline.parallel_speedup, num_cpus::get().max(4));
-    println!("║   Thread efficiency: {:>5.1}%                                 ║",
-        result.pipeline.thread_efficiency * 100.0);
+    println!(
+        "║   Parallel speedup:  {:>5.2}× ({} workers)                    ║",
+        result.pipeline.parallel_speedup,
+        num_cpus::get().max(4)
+    );
+    println!(
+        "║   Thread efficiency: {:>5.1}%                                 ║",
+        result.pipeline.thread_efficiency * 100.0
+    );
 
     // Quality Metrics
     println!("╟───────────────────────────────────────────────────────────────╢");
     println!("║ 💎 QUALITY METRICS                                            ║");
     println!("╟───────────────────────────────────────────────────────────────╢");
-    println!("║   Tiles:  {} detected → {} merged ({:.1}% reduction)     ║",
-        result.quality.tiles_detected, result.quality.tiles_merged, result.quality.merge_reduction);
-    println!("║   Cache:  {} hits / {} total ({:.1}% hit rate)           ║",
-        result.quality.cache_hits, result.quality.tiles_merged, result.quality.cache_hit_rate * 100.0);
-    println!("║   Encoded: {} tiles ({:.1} tiles/s/worker)                 ║",
-        result.quality.tiles_encoded, result.quality.encode_efficiency);
+    println!(
+        "║   Tiles:  {} detected → {} merged ({:.1}% reduction)     ║",
+        result.quality.tiles_detected, result.quality.tiles_merged, result.quality.merge_reduction
+    );
+    println!(
+        "║   Cache:  {} hits / {} total ({:.1}% hit rate)           ║",
+        result.quality.cache_hits,
+        result.quality.tiles_merged,
+        result.quality.cache_hit_rate * 100.0
+    );
+    println!(
+        "║   Encoded: {} tiles ({:.1} tiles/s/worker)                 ║",
+        result.quality.tiles_encoded, result.quality.encode_efficiency
+    );
     println!("║                                                               ║");
-    println!("║   Compression: {:.2}:1 ratio ({:.1} MB → {:.1} MB)         ║",
+    println!(
+        "║   Compression: {:.2}:1 ratio ({:.1} MB → {:.1} MB)         ║",
         result.quality.compression_ratio,
         result.quality.raw_bytes as f64 / 1_000_000.0,
-        result.quality.compressed_bytes as f64 / 1_000_000.0);
+        result.quality.compressed_bytes as f64 / 1_000_000.0
+    );
     println!("╚═══════════════════════════════════════════════════════════════╝");
 }
 
@@ -481,7 +512,8 @@ fn print_summary(results: &[BenchmarkResult], target_fps: u32) {
         };
 
         // Emoji takes 2 visual columns, so adjust padding
-        println!("║ {} {:<7} │ {:>7} │ {:>13} │ {:>12} │ {:>9} ║ {}",
+        println!(
+            "║ {} {:<7} │ {:>7} │ {:>13} │ {:>12} │ {:>9} ║ {}",
             emoji,
             &result.scenario[..result.scenario.len().min(7)],
             format!("{:.0}", result.performance.frames_per_sec),
@@ -493,8 +525,11 @@ fn print_summary(results: &[BenchmarkResult], target_fps: u32) {
     }
 
     println!("╟─────────────┴─────────┴───────────────┴──────────────┴───────────╢");
-    println!("║ Target: {:.1} ms/frame ({} FPS)                                   ║",
-        1000.0 / target_fps as f64, target_fps);
+    println!(
+        "║ Target: {:.1} ms/frame ({} FPS)                                   ║",
+        1000.0 / target_fps as f64,
+        target_fps
+    );
     println!("╚═══════════════════════════════════════════════════════════════════╝");
 }
 
@@ -510,17 +545,18 @@ fn main() {
     println!("║  Comprehensive metrics: Performance │ Pipeline │ Quality      ║");
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
-    let mut config = Config::default();
-    config.debug_mode = false;
+    let config = Config::default(); // debug_mode is already false
 
     let tile_width = 1920 / config.tiles_x;
     let tile_height = tile_width * 1080 / 1920;
-    let tiles_y = (1080 + tile_height - 1) / tile_height;
+    let tiles_y = 1080_u32.div_ceil(tile_height);
 
     println!("⚙️  Configuration:");
     println!("   Resolution: 1920×1080");
-    println!("   Tile grid: {}×{} ({}×{} pixels per tile)",
-        config.tiles_x, tiles_y, tile_width, tile_height);
+    println!(
+        "   Tile grid: {}×{} ({}×{} pixels per tile)",
+        config.tiles_x, tiles_y, tile_width, tile_height
+    );
     println!("   CPU cores: {} workers", num_cpus::get().max(4));
     println!("   Target FPS: {}", config.target_fps.get());
     println!("   Frames per scenario: 100");
