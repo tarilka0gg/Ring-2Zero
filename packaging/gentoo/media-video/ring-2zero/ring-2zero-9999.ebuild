@@ -7,7 +7,7 @@ CRATES=""
 # Live ebuild: cargo_live_src_unpack fetches the crates at unpack time (network needed, allowed for 9999).
 # For a versioned ebuild, generate CRATES from Cargo.lock with pycargoebuild.
 
-inherit cargo git-r3 xdg
+inherit cargo desktop git-r3 xdg
 
 DESCRIPTION="Wayland screen streaming server: tile-diffed WebP over WebRTC to any browser"
 HOMEPAGE="https://github.com/tarilka0gg/Ring-2Zero"
