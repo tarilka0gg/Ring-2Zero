@@ -24,6 +24,9 @@ fi
 D=dist/$NAME-$VERSION
 rm -rf "${D:?}"
 install -Dm755 target/release/ring-2zero -t "$D/prefix/bin"
+# The build machine's libc may carry an "x86-64-v3 needed" note that stops the binary on older CPUs
+# ("CPU ISA level is lower than required"); the code itself is compiled for the baseline.
+objcopy --remove-section=.note.gnu.property "$D/prefix/bin/ring-2zero"
 ln -s ring-2zero "$D/prefix/bin/r2zr"
 install -Dm644 man/ring-2zero.1 -t "$D/prefix/share/man/man1"
 install -Dm644 "packaging/$ID.desktop" -t "$D/prefix/share/applications"
