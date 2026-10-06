@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ring-2Zero
+GenericName=Screen Streamer
+Comment=Stream this Wayland desktop to any browser over WebRTC
+Exec=ring-2zero
+Icon=ring-2zero
+Terminal=true
+Categories=Network;RemoteAccess;
+Keywords=screen;stream;webrtc;wayland;remote;

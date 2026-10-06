@@ -3,7 +3,10 @@ use crate::convert::convert_bgrx_to_rgba_inplace;
 use crate::error::{Error, Result};
 use crate::frame::Frame;
 
-use std::sync::{atomic::{AtomicBool, AtomicI32, Ordering}, mpsc, Arc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicI32, Ordering},
+    mpsc, Arc,
+};
 use std::time::Duration;
 
 // SPA video format constants (from spa/param/video/raw.h)
@@ -13,34 +16,49 @@ const SPA_VIDEO_FORMAT_BGRA: u32 = 12;
 
 extern "C" {
     fn pw_capture_start(
-        on_frame:  unsafe extern "C" fn(*const u8, u32, u32, u32, u32, *mut libc::c_void),
+        on_frame: unsafe extern "C" fn(*const u8, u32, u32, u32, u32, u32, *mut libc::c_void),
         user_data: *mut libc::c_void,
         stop_flag: *const libc::c_int,
-        err_buf:   *mut libc::c_char,
-        err_len:   libc::c_int,
+        err_buf: *mut libc::c_char,
+        err_len: libc::c_int,
     ) -> libc::c_int;
 }
 
 // Shared state passed as user_data to the C callback
 struct CallbackState {
-    tx:   mpsc::SyncSender<Frame>,
+    tx: mpsc::SyncSender<Frame>,
     rgba: std::cell::UnsafeCell<Vec<u8>>,
 }
 
 unsafe impl Sync for CallbackState {}
 
 unsafe extern "C" fn on_frame_cb(
-    data:    *const u8,
-    width:   u32,
-    height:  u32,
-    stride:  u32,
+    data: *const u8,
+    width: u32,
+    height: u32,
+    stride: u32,
     spa_fmt: u32,
-    ud:      *mut libc::c_void,
+    data_size: u32,
+    ud: *mut libc::c_void,
 ) {
     let state = &*(ud as *const CallbackState);
-    let size  = (stride * height) as usize;
-    let raw   = std::slice::from_raw_parts(data, size);
-    let rgba  = &mut *state.rgba.get();
+
+    // `data_size` (the C side's d->chunk->size) is the only value that can
+    // be trusted as an upper bound on how many bytes are actually valid at
+    // `data`; stride*height is just what this frame's own header claims.
+    // Right after an output resize the two can briefly disagree — the
+    // compositor pushes a frame at the new size before format renegotiation
+    // (a fresh SPA_PARAM_Format) has caught up to us — and reading
+    // stride*height bytes unconditionally would then read past the end of
+    // a smaller real buffer. Drop a mismatched frame instead of risking
+    // that; the next one, once format catches up, is fine.
+    let needed = u64::from(stride) * u64::from(height);
+    if needed == 0 || needed > u64::from(data_size) {
+        return;
+    }
+    let size = needed as usize;
+    let raw = std::slice::from_raw_parts(data, size);
+    let rgba = &mut *state.rgba.get();
 
     match spa_fmt {
         SPA_VIDEO_FORMAT_BGRA | SPA_VIDEO_FORMAT_BGRX => {
@@ -57,11 +75,13 @@ unsafe extern "C" fn on_frame_cb(
 
     let frame_data = std::mem::take(rgba);
     // Empty damage = full frame update
-    let _ = state.tx.try_send(Frame::new(frame_data, width, height, vec![]));
+    let _ = state
+        .tx
+        .try_send(Frame::new(frame_data, width, height, vec![]));
 }
 
 pub struct PipeWireCapture {
-    tx:   mpsc::SyncSender<Frame>,
+    tx: mpsc::SyncSender<Frame>,
     stop: Arc<AtomicBool>,
 }
 
@@ -74,7 +94,7 @@ impl PipeWireCapture {
 impl CaptureBackend for PipeWireCapture {
     fn run(self: Box<Self>, _frame_duration: Duration) -> Result<()> {
         let state = Box::new(CallbackState {
-            tx:   self.tx,
+            tx: self.tx,
             rgba: std::cell::UnsafeCell::new(Vec::new()),
         });
         let state_ptr = Box::into_raw(state);
@@ -89,13 +109,11 @@ impl CaptureBackend for PipeWireCapture {
         // Watcher thread: sets stop_int when stop flag fires
         let stop_clone = Arc::clone(&self.stop);
         let stop_int_clone = Arc::clone(&stop_int);
-        let watcher = std::thread::spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(50));
-                if stop_clone.load(Ordering::Relaxed) {
-                    stop_int_clone.store(1, Ordering::SeqCst);
-                    break;
-                }
+        let watcher = std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(50));
+            if stop_clone.load(Ordering::Relaxed) {
+                stop_int_clone.store(1, Ordering::SeqCst);
+                break;
             }
         });
 
