@@ -335,6 +335,8 @@ CRATES="
 	zmij@1.0.23
 "
 
+RUST_MIN_VER="1.89"
+
 inherit cargo desktop optfeature xdg
 
 DESCRIPTION="Wayland screen streamer: tile-diffed WebP over WebRTC to any browser"
@@ -397,12 +399,12 @@ src_install() {
 	doins packaging/io.github.tarilka0gg.Ring2Zero.metainfo.xml
 	insinto /usr/share/icons/hicolor/scalable/apps
 	doins packaging/icons/ring-2zero.svg
-	dodoc CHANGELOG.md README.md SETUP.md
+	dodoc CHANGELOG.md README.md
 }
 
 pkg_postinst() {
 	xdg_pkg_postinst
-	optfeature "TURN/STUN servers for streaming across NAT" net-dns/coturn
+	optfeature "TURN/STUN servers for streaming across NAT" net-im/coturn
 }
 
 pkg_postrm() {
