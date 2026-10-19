@@ -42,8 +42,32 @@ What that buys you in practice:
 It's a single Rust binary plus one embedded HTML file: no Node.js server,
 no separate static file host, no system service beyond the binary itself.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/img/login.png"><img src="docs/img/login.png" alt="The client page asking for the token" width="100%"></a></td>
+    <td width="50%"><a href="docs/img/stream.png"><img src="docs/img/stream.png" alt="A Wayland desktop streamed into the browser, with the live statistics bar" width="100%"></a></td>
+  </tr>
+  <tr>
+    <td><b>Connect</b><br><sub>Open the server's URL and enter the token it printed; the browser remembers it.</sub></td>
+    <td><b>The stream</b><br><sub>Your screen in the browser tab, with tiles per second, traffic, latency and the screen size on top.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/img/stream-debug.png"><img src="docs/img/stream-debug.png" alt="The DEBUG button shows the connection counters" width="100%"></a></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td><b>Diagnostics</b><br><sub>DEBUG adds message, acknowledgement and tile counters, failures and the canvas size.</sub></td>
+    <td></td>
+  </tr>
+</table>
+
+<sub>A throwaway nested desktop (a video and a dialog) streamed to a headless browser; click a picture to see it full-size.</sub>
+
 ## Table of contents
 
+- [Screenshots](#screenshots)
 - [Features](#features)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
