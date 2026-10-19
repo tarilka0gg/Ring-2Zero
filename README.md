@@ -63,7 +63,7 @@ no separate static file host, no system service beyond the binary itself.
   </tr>
 </table>
 
-The client page is in English; it switches to Ukrainian when the browser's language is Ukrainian (or with `?lang=uk` in the URL).
+The client page is in English. It switches to Ukrainian by the shared Simple Linux language setting ([simple-locale](https://github.com/tarilka0gg/simple-locale): `RING2ZERO_LANG=uk`, `SIMPLE_LANG=uk` or `lang = "uk"` in `~/.config/simple-linux/locale.toml` on the server), or, when nothing is configured, when the browser's language is Ukrainian; `?lang=uk` in the URL decides for one visit.
 
 <sub>A throwaway nested desktop (a video and a dialog) streamed to a headless browser; click a picture to see it full-size.</sub>
 

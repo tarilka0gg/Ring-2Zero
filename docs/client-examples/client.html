@@ -3,6 +3,7 @@
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <meta charset="UTF-8">
+<!--SIMPLE_LOCALE-->
 <title>Ring-2Zero</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='4' width='20' height='13' rx='2' fill='none' stroke='%23af3a03' stroke-width='2'/%3E%3Cline x1='8' y1='21' x2='16' y2='21' stroke='%23af3a03' stroke-width='2' stroke-linecap='round'/%3E%3Cline x1='12' y1='17' x2='12' y2='21' stroke='%23af3a03' stroke-width='2'/%3E%3Ccircle cx='12' cy='10.5' r='2.5' fill='%23af3a03'/%3E%3C/svg%3E">
 <style>
@@ -194,8 +195,10 @@
   });
   const overlay     = document.getElementById('overlay');
   const statusDot   = document.getElementById('status-dot');
-  // Interface language: English by default, Ukrainian when the browser language is Ukrainian (or ?lang=uk).
-  const LANG = ((new URLSearchParams(location.search).get('lang') || navigator.language || 'en').toLowerCase().startsWith('uk')) ? 'uk' : 'en';
+  // Interface language: English by default, Ukrainian when the setting or the browser language says so (or ?lang=uk).
+  // The server fills in the shared Simple Linux language setting (simple-locale); opened as a plain file, the browser's language decides.
+  const LANG = (typeof SimpleLocale !== 'undefined') ? SimpleLocale.detect(['en', 'uk'])
+    : ((new URLSearchParams(location.search).get('lang') || navigator.language || 'en').toLowerCase().startsWith('uk') ? 'uk' : 'en');
   const I18N = {
     en: {
       connecting: 'Connecting...', tiles: 'Tiles/s:', traffic: 'Traffic:', latency: 'Latency:', size: 'Size:',

@@ -102,10 +102,17 @@ where
     }
 }
 
+/// The client page with the shared language setting filled in (`simple-locale`: `RING2ZERO_LANG`, `SIMPLE_LANG`, the shared
+/// `locale.toml`; "auto" lets the browser's language decide).
+fn client_page() -> String {
+    CLIENT_HTML.replace("<!--SIMPLE_LOCALE-->", &simple_locale::html_head(&["en", "uk"], Some("RING2ZERO_LANG")))
+}
+
 /// Serves the embedded client page over plain HTTP GET. Single-page tool, so
 /// every path resolves to the same response — there's nothing else to route.
 async fn serve_client_html<S: AsyncWrite + Unpin>(mut stream: S) -> Result<()> {
-    let body = CLIENT_HTML.as_bytes();
+    let page = client_page();
+    let body = page.as_bytes();
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -436,14 +443,17 @@ mod tests {
 
     #[tokio::test]
     async fn serve_client_html_writes_a_200_response_with_the_full_page() {
-        let (tx, mut rx) = tokio::io::duplex(CLIENT_HTML.len() + 4096);
+        let expected = client_page();
+        let (tx, mut rx) = tokio::io::duplex(expected.len() + 4096);
         serve_client_html(tx).await.unwrap();
 
         let mut out = Vec::new();
         rx.read_to_end(&mut out).await.unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(text.contains(&format!("Content-Length: {}", CLIENT_HTML.len())));
-        assert!(text.ends_with(CLIENT_HTML));
+        assert!(text.contains(&format!("Content-Length: {}", expected.len())));
+        assert!(text.ends_with(&expected));
+        assert!(text.contains("<meta name=\"simple-lang\""), "the language setting is handed to the page");
+        assert!(!text.contains("<!--SIMPLE_LOCALE-->"));
     }
 }

@@ -1920,6 +1920,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "simple-locale",
  "subtle",
  "tokio",
  "tokio-rustls",
@@ -2207,6 +2208,11 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
+name = "simple-locale"
+version = "0.1.0"
+source = "git+https://github.com/tarilka0gg/simple-locale?tag=v0.1.0#9a3bd1e4701bc89465b5e79245e605b0d69187ee"
 
 [[package]]
 name = "slab"
