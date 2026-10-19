@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="uk">
+<html lang="en">
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
 <meta charset="UTF-8">
@@ -153,34 +153,34 @@
 <body>
 
 <div id="statusbar">
-  <div id="status-group"><span id="status-dot"></span><span id="status-text">Підключення...</span></div>
+  <div id="status-group"><span id="status-dot"></span><span id="status-text" data-i18n="connecting">Connecting...</span></div>
   <div id="stats">
-    <div>Тайлів/с: <span id="tiles">—</span></div>
-    <div>Трафік: <span id="frame-size">—</span></div>
-    <div>Латентність: <span id="latency">—</span></div>
-    <div>Розмір: <span id="info">—</span></div>
+    <div><span data-i18n="tiles">Tiles/s:</span> <span id="tiles">—</span></div>
+    <div><span data-i18n="traffic">Traffic:</span> <span id="frame-size">—</span></div>
+    <div><span data-i18n="latency">Latency:</span> <span id="latency">—</span></div>
+    <div><span data-i18n="size">Size:</span> <span id="info">—</span></div>
   </div>
   <div id="btn-row">
-    <button id="btn-debug" class="btn" title="Показати діагностику з'єднання">DEBUG</button>
+    <button id="btn-debug" class="btn" data-i18n-title="debugTitle" title="Show connection diagnostics">DEBUG</button>
     <button id="btn-mode" class="btn">FIT</button>
-    <button id="btn-control" class="btn" hidden title="Керувати мишею й клавіатурою віддаленої машини">КЕРУВАННЯ: ВИМК</button>
-    <button id="btn-keyboard" class="btn" hidden title="Показати клавіатуру для введення тексту">⌨</button>
+    <button id="btn-control" class="btn" hidden data-i18n-title="controlTitle" title="Control the remote machine's mouse and keyboard">CONTROL: OFF</button>
+    <button id="btn-keyboard" class="btn" hidden data-i18n-title="keyboardTitle" title="Show a keyboard for typing">⌨</button>
   </div>
   <div id="debug-panel"><span id="debug-info">—</span></div>
 </div>
 
 <div id="viewport">
   <canvas id="display-canvas"></canvas>
-  <div id="overlay"><p>Очікування підключення через WebRTC...<br><small id="server-label">Server: ws://localhost:9001</small></p></div>
+  <div id="overlay"><p><span data-i18n="waiting">Waiting for a WebRTC connection...</span><br><small id="server-label">Server: ws://localhost:9001</small></p></div>
   <div id="password-overlay">
     <form id="password-form">
       <h1>Ring-2Zero</h1>
       <div id="password-row">
-        <input id="password-input" type="password" placeholder="Пароль" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus>
+        <input id="password-input" type="password" data-i18n-placeholder="password" placeholder="Password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus>
         <button type="button" id="password-toggle">👁</button>
       </div>
-      <button type="submit">Увійти</button>
-      <p id="password-error">Невірний пароль</p>
+      <button type="submit" data-i18n="signIn">Sign in</button>
+      <p id="password-error" data-i18n="wrongPassword">Wrong password</p>
     </form>
   </div>
 </div>
@@ -194,6 +194,39 @@
   });
   const overlay     = document.getElementById('overlay');
   const statusDot   = document.getElementById('status-dot');
+  // Interface language: English by default, Ukrainian when the browser language is Ukrainian (or ?lang=uk).
+  const LANG = ((new URLSearchParams(location.search).get('lang') || navigator.language || 'en').toLowerCase().startsWith('uk')) ? 'uk' : 'en';
+  const I18N = {
+    en: {
+      connecting: 'Connecting...', tiles: 'Tiles/s:', traffic: 'Traffic:', latency: 'Latency:', size: 'Size:',
+      debugTitle: 'Show connection diagnostics', controlTitle: "Control the remote machine's mouse and keyboard",
+      keyboardTitle: 'Show a keyboard for typing', waiting: 'Waiting for a WebRTC connection...',
+      password: 'Password', signIn: 'Sign in', wrongPassword: 'Wrong password',
+      connectingTo: 'Connecting to', checking: 'Checking the password...', accepted: 'Password accepted, waiting for the offer...',
+      gotOffer: 'Offer received, creating the connection...', connected: 'Connected', kbps: 'kbit/s', ms: 'ms',
+      reconnecting: 'Reconnecting...', error: 'Error:', wsError: 'WebSocket error',
+      closedRetry: 'Connection closed, reconnecting...', unreachable: 'Server unreachable, retrying...',
+      failed: 'Could not connect:', controlOn: 'CONTROL: ON', controlOff: 'CONTROL: OFF',
+    },
+    uk: {
+      connecting: 'Підключення...', tiles: 'Тайлів/с:', traffic: 'Трафік:', latency: 'Латентність:', size: 'Розмір:',
+      debugTitle: "Показати діагностику з'єднання", controlTitle: 'Керувати мишею й клавіатурою віддаленої машини',
+      keyboardTitle: 'Показати клавіатуру для введення тексту', waiting: 'Очікування підключення через WebRTC...',
+      password: 'Пароль', signIn: 'Увійти', wrongPassword: 'Невірний пароль',
+      connectingTo: 'Підключення до', checking: 'Перевірка пароля...', accepted: 'Пароль прийнято, чекаємо offer...',
+      gotOffer: "Отримано offer, створюємо з'єднання...", connected: 'Підключено', kbps: 'кбіт/с', ms: 'мс',
+      reconnecting: 'Перепідключення...', error: 'Помилка:', wsError: 'Помилка WebSocket',
+      closedRetry: "З'єднання закрито, перепідключення...", unreachable: 'Сервер недоступний, повторна спроба...',
+      failed: 'Не вдалося підключитися:', controlOn: 'КЕРУВАННЯ: УВІМК', controlOff: 'КЕРУВАННЯ: ВИМК',
+    },
+  };
+  const t = k => I18N[LANG][k];
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => { el.title = t(el.dataset.i18nTitle); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+  { const c = document.getElementById('btn-control'); if (c) c.textContent = t('controlOff'); }
+
   const statusText  = document.getElementById('status-text');
   const tilesEl     = document.getElementById('tiles');
   const frameSizeEl = document.getElementById('frame-size');
@@ -498,7 +531,7 @@
     }
 
     statusDot.className = 'connecting';
-    statusText.textContent = `Підключення до ${wsScheme}://${wsHost}...`;
+    statusText.textContent = t('connectingTo') + ` ${wsScheme}://${wsHost}...`;
 
     try {
       console.log('Connecting to:', wsUrl);
@@ -507,7 +540,7 @@
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'auth', token }));
-        statusText.textContent = 'Перевірка пароля...';
+        statusText.textContent = t('checking');
       };
 
       ws.onmessage = async (event) => {
@@ -520,10 +553,10 @@
             localStorage.setItem(TOKEN_STORAGE_KEY, token);
             btnControl.hidden = !message.control;
             console.log(`Authenticated, server v${message.version}, waiting for offer...`);
-            statusText.textContent = 'Пароль прийнято, чекаємо offer...';
+            statusText.textContent = t('accepted');
           } else if (message.type === 'offer') {
             console.log('Received offer from server');
-            statusText.textContent = 'Отримано offer, створюємо з\'єднання...';
+            statusText.textContent = t('gotOffer');
             currentSession = message.session;
 
             // Close stale connection on reconnect
@@ -570,7 +603,7 @@
 
               dataChannel.onopen = () => {
                 statusDot.className    = 'connected';
-                statusText.textContent = 'Підключено';
+                statusText.textContent = t('connected');
                 overlay.style.display  = 'none';
                 console.log('DataChannel opened');
               };
@@ -645,9 +678,9 @@
 
                 if (now - lastStatTime >= 1000) {
                   tilesEl.textContent    = tileCount;
-                  frameSizeEl.textContent = (totalBytes * 8 / 1000).toFixed(0) + ' кбіт/с';
+                  frameSizeEl.textContent = (totalBytes * 8 / 1000).toFixed(0) + ' ' + t('kbps');
                   latencyEl.textContent  = latencyCount
-                    ? (latencySum / latencyCount).toFixed(1) + ' мс'
+                    ? (latencySum / latencyCount).toFixed(1) + ' ' + t('ms')
                     : '—';
 
                   tileCount     = 0;
@@ -661,7 +694,7 @@
               dataChannel.onclose = () => {
                 console.log('DataChannel closed, waiting for reconnect...');
                 statusDot.className = 'connecting';
-                statusText.textContent = 'Перепідключення...';
+                statusText.textContent = t('reconnecting');
                 dataChannel = null;
               };
 
@@ -714,14 +747,14 @@
           }
         } catch (err) {
           console.error('Message handling error:', err);
-          statusText.textContent = 'Помилка: ' + errMsg(err);
+          statusText.textContent = t('error') + ' ' + errMsg(err);
         }
       };
 
       ws.onerror = (err) => {
         console.error('WebSocket error:', err);
         statusDot.className = 'error';
-        statusText.textContent = 'Помилка WebSocket';
+        statusText.textContent = t('wsError');
       };
 
       ws.onclose = (event) => {
@@ -734,12 +767,12 @@
           // the saved token and just retries.
           localStorage.removeItem(TOKEN_STORAGE_KEY);
           lastAuthFailed = true;
-          statusText.textContent = 'Невірний пароль';
+          statusText.textContent = t('wrongPassword');
           setTimeout(connect, 300);
         } else {
           statusText.textContent = authenticated
-            ? 'З\'єднання закрито, перепідключення...'
-            : 'Сервер недоступний, повторна спроба...';
+            ? t('closedRetry')
+            : t('unreachable');
           setTimeout(connect, authenticated ? 1000 : 2000);
         }
       };
@@ -747,7 +780,7 @@
     } catch (err) {
       console.error('Connection failed:', err);
       statusDot.className = 'error';
-      statusText.textContent = 'Не вдалося підключитися: ' + errMsg(err);
+      statusText.textContent = t('failed') + ' ' + errMsg(err);
     }
   }
 
@@ -765,7 +798,7 @@
   function setControl(on) {
     if (on) inputCapture.enable(); else inputCapture.disable();
     btnControl.classList.toggle('on', on);
-    btnControl.textContent = on ? 'КЕРУВАННЯ: УВІМК' : 'КЕРУВАННЯ: ВИМК';
+    btnControl.textContent = on ? t('controlOn') : t('controlOff');
     dispCanvas.classList.toggle('control', on);
     btnKeyboard.hidden = !(on && isTouchDevice);
   }

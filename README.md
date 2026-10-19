@@ -63,6 +63,8 @@ no separate static file host, no system service beyond the binary itself.
   </tr>
 </table>
 
+The client page is in English; it switches to Ukrainian when the browser's language is Ukrainian (or with `?lang=uk` in the URL).
+
 <sub>A throwaway nested desktop (a video and a dialog) streamed to a headless browser; click a picture to see it full-size.</sub>
 
 ## Table of contents
