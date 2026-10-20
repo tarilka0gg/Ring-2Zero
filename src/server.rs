@@ -105,7 +105,10 @@ where
 /// The client page with the shared language setting filled in (`simple-locale`: `RING2ZERO_LANG`, `SIMPLE_LANG`, the shared
 /// `locale.toml`; "auto" lets the browser's language decide).
 fn client_page() -> String {
-    CLIENT_HTML.replace("<!--SIMPLE_LOCALE-->", &simple_locale::html_head(&["en", "uk"], Some("RING2ZERO_LANG")))
+    CLIENT_HTML.replace(
+        "<!--SIMPLE_LOCALE-->",
+        &simple_locale::html_head(&["en", "uk"], Some("RING2ZERO_LANG")),
+    )
 }
 
 /// Serves the embedded client page over plain HTTP GET. Single-page tool, so
@@ -453,7 +456,10 @@ mod tests {
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(text.contains(&format!("Content-Length: {}", expected.len())));
         assert!(text.ends_with(&expected));
-        assert!(text.contains("<meta name=\"simple-lang\""), "the language setting is handed to the page");
+        assert!(
+            text.contains("<meta name=\"simple-lang\""),
+            "the language setting is handed to the page"
+        );
         assert!(!text.contains("<!--SIMPLE_LOCALE-->"));
     }
 }
