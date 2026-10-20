@@ -1,9 +1,20 @@
 # Changelog
 
-## v0.400.0 (September 2026) — remaster
+All notable changes to Ring-2Zero, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/), with
+`## [version] - date` headings.
+
+## [Unreleased]
+
+### Changed
+- The client page is in English by default; Ukrainian when the shared Simple Linux language setting
+  ([simple-locale](https://github.com/tarilka0gg/simple-locale)) or the browser's language says so, or with `?lang=uk` in the URL.
+  The remote-control toggle reads `CONTROL: ON/OFF` in English.
+- README: screenshots of the client (login, stream, diagnostics).
+
+## [0.400.0] - 2026-10-06 — remaster
 - **Changed**: client page UI polish — the statusbar now wraps cleanly down to a 320px-wide phone (the button row used to just overflow off-screen), per-connection diagnostics (msgs/ack/tileMsgs/…) are hidden behind a **DEBUG** toggle instead of always shown (`?debug=1` opens it pre-expanded), the page viewport blocks pinch-zoom (it fought with touch dragging in `--control` mode), and the tab now has a real favicon instead of the browser's generic one.
 - **Changed**: the client/server protocol changed, so use the page served by the same binary. Older cached or separately hosted `client.html` copies won't connect: the token moved out of the URL into the first WebSocket message, and the server now sends a `hello` with the ICE servers after authentication.
-- **Added**: remote control (`--control` / `RING2ZERO_CONTROL`). A **КЕРУВАННЯ** toggle appears in the page, and mouse, wheel and keyboard input is injected through `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` over an ordered `input` DataChannel. The pointer is bound to the streamed output, the keyboard reuses the compositor's keymap, and every held key/button is released when the tab loses focus or the session ends.
+- **Added**: remote control (`--control` / `RING2ZERO_CONTROL`). A **CONTROL** toggle appears in the page (it read КЕРУВАННЯ in the Ukrainian-only page), and mouse, wheel and keyboard input is injected through `zwlr_virtual_pointer_v1` + `zwp_virtual_keyboard_v1` over an ordered `input` DataChannel. The pointer is bound to the streamed output, the keyboard reuses the compositor's keymap, and every held key/button is released when the tab loses focus or the session ends.
 - **Added**: `RING2ZERO_ICE_SERVERS` for STUN/TURN across NAT. It's validated at startup, and the same list is handed to the browser, so nothing needs configuring on the client side.
 - **Changed**: authentication is now the first WebSocket message (`{"type":"auth","token":…}`) instead of a `?token=` query parameter, which ended up in browser history and proxy logs. The comparison is constant-time, there's a 5 s deadline, and wrong tokens get a 1 s delay and close code `4001`. That lets the page tell a wrong password (asks again) from an unreachable server (keeps the saved one and retries) instead of guessing with a retry counter.
 - **Added**: the page reconnects on its own after the connection drops.
@@ -24,12 +35,12 @@
 - **Added**: bidirectional clipboard sync, gated behind `--control` (`src/clipboard.rs`, a `clipboard` DataChannel). Uses `wl-clipboard-rs` (`wlr-data-control`/`ext-data-control`, so it works on GNOME/KDE too, unlike the wlroots-only virtual-pointer/keyboard code). No "clipboard changed" event exists cross-toolkit, so both sides poll (host: 700ms; browser: same, only while the tab has focus) and dedupe against the last value each side itself set, to avoid ping-ponging a copy back and forth.
 - **Added**: mobile touch support for `--control` sessions — a single-finger long-press (550ms, cancelled by >10 backing-store-pixel movement) sends a right-click, a two-finger drag sends a natural-direction scroll wheel event, and a hidden input element bridges the on-screen keyboard (a **⌨** button appears once control is on, on a touch device) to the same key-event wire format as a physical keyboard.
 
-## v0.300.1 (July 2026)
+## [0.300.1] - 2026-07-22
 - **Fixed**: `hash_tile`'s AVX2/SSE2 XOR-accumulator could hash two *different* solid-color tiles of the same size identically — every SIMD lane loaded the exact same value on every iteration for a byte-uniform buffer, and XORing a constant into the accumulator an even number of times cancels to a value that no longer depends on the data at all. Root-caused (not just papered over with a different final mix — that alone didn't fix it, see the regression tests' comments) by tying each iteration's data to the changing seed via addition, not two independently-cancelable XOR terms.
 - **Fixed**: the non-x86_64 scalar hashing fallback (`hash_scalar`) was missing its `use xxhash_rust::xxh3::Xxh3;` import and would never have compiled on a non-x86_64 target.
 - **Added**: a 20-size × 5-color-pair sweep test plus two pinned regression cases (even/odd chunk-count parity) for the collision fix, and a direct SSE2-path test that doesn't rely on runtime AVX2 detection picking a particular code path.
 
-## v0.300.0 (July 2026)
+## [0.300.0] - 2026-07-22
 - **Added**: `install.sh` — detects the system package manager, checks/installs the required libraries and a C compiler, installs Rust if missing, builds and installs the binary, adds an `r2zr` shell alias (bash/zsh/fish), and installs a `man ring-2zero` page.
 - **Added**: a real man(1) page (`man/ring-2zero.1`) covering the same ground as `--help`.
 - **Added**: a startup splash banner (block-letter wordmark), shown on an actual terminal only, colorless when `NO_COLOR` is set.
@@ -39,7 +50,7 @@
 - **Changed**: documentation overhaul — README gained a real Quick Start tutorial and a full env var/CLI flag reference; `docs/DEVELOPMENT.md` replaced three stale, pre-0.299 docs files with one architecture/protocol/algorithm/troubleshooting reference; full version history moved out of README into this file.
 - **Removed**: tracked build artifacts (`librust_out.rlib`, `test_benchmark.rs`) and three superseded client-examples HTML drafts that predated `client.html`.
 
-## v0.299.2 (July 2026)
+## [0.299.2] - 2026-07-21
 - **Fixed**: the damage-region skip bypassed hash comparison entirely, so a tile force-reset by `invalidate_tiles`/`invalidate_cache` (v0.299.1's headline fix) still never got re-detected once damage tracking was active and the tile fell outside the current frame's damage regions — it now checks a per-tile force-redetect flag before deferring to the skip.
 - **Fixed**: ACK-loss recovery only re-armed a merged tile's single representative grid cell instead of every cell it covered (up to 4×4=16), so most of a lost merged-tile region could stay stale indefinitely — invalidation now expands to every covered cell.
 - **Fixed**: `invalidate_tiles`/`invalidate_cache` reset hash state but left `last_sent_frame` untouched, so the FPS-throttle interval could still delay the immediate resend the invalidation was meant to trigger.
@@ -51,7 +62,7 @@
 - **Added**: the browser client is now served directly by the binary (embedded via `include_str!`) over the same host/port as the WebSocket, including over TLS — no separate static file server needed.
 - **Added**: `-h`/`--help`.
 
-## v0.299.1 (July 2026)
+## [0.299.1] - 2026-07-21
 - **Fixed**: `invalidate_tiles`/`invalidate_cache` (ACK-loss recovery, periodic quality refresh) were silently defeated by the zero-copy half-hash shortcut whenever a tile's pixels weren't actively changing at the moment of invalidation — they now actually force re-detection.
 - **Fixed**: tiles held back by FPS throttling were misclassified as "unchanged" in the per-tile change-history/priority stats, and their hash baseline never advanced — both now update correctly even when the tile isn't sent that frame.
 - **Fixed**: the per-tile encode cache could serve a stale WebP blob for a merged multi-tile region, since cache validity was keyed on only one representative cell's hash while the cached bytes covered the whole merged block — the fast path is now restricted to single-cell tiles.
@@ -59,14 +70,14 @@
 - **Fixed**: ACK-loss tile indices are now tagged with an epoch counter so they can't be misapplied to a new tile grid after a resolution change.
 - **Changed**: removed four full-array clones per frame from the diff hot path (borrowing instead) and replaced two `HashSet<usize>` lookups with dense `Vec<bool>` masks — a measured ~15–25% reduction in diff-detection time on light/medium-change frames.
 
-## v0.299 (July 2026)
+## [0.299] - 2026-07-10
 - **Fixed**: `RTCPeerConnection` was never explicitly closed on drop, leaking the ICE/DTLS/SCTP transport stack on every reconnect — now closed via `Drop`.
 - **Fixed**: DataChannel accidentally lost its `ordered: false` setting, reintroducing head-of-line-blocking latency.
 - **Fixed**: TLS cert/key load failure now returns a clean error and exits instead of panicking.
 - **Changed**: `RING2ZERO_IPV4_ONLY` is now read into `Config` (was previously unconditional) — IPv6-only deployments no longer get zero ICE candidates.
 - **Changed**: `RING2ZERO_TLS_CERT/KEY`, `RING2ZERO_ICE_INTERFACE`, `RING2ZERO_MAX_FPS` consolidated into `Config`, matching the existing `RING2ZERO_TOKEN` pattern.
 
-## v0.291 (July 2026)
+## [0.291] - 2026-07-09
 - **Fixed**: ICE candidates from the client were dropped whenever they arrived before the SDP answer (a common race, since the client fires `onicecandidate` before sending its answer) — they're now buffered and applied once the remote description is set. This was silently breaking nearly every non-localhost connection.
 - **Fixed**: Safari/Chrome obfuscate host ICE candidates behind a `<uuid>.local` mDNS name; mDNS resolution is now explicitly enabled so these candidates actually resolve instead of being unusable.
 - **Fixed**: a full-screen refresh could merge every dirty tile into one oversized message exceeding the DataChannel's message-size limit — merged tiles are now capped to a bounded grid size.
@@ -75,24 +86,24 @@
 - **Added**: password-gated client — `client.html` prompts for the token instead of taking it via URL, and remembers it in `localStorage`.
 - **Changed**: ICE disconnect/keepalive timeouts relaxed from same-machine-tuned defaults to values tolerant of real network latency/jitter.
 
-## v0.277 (July 2026)
+## [0.277] - 2026-07-08
 - **Added**: DMA-BUF zero-copy capture via wlr-screencopy v3 + libgbm (LINEAR GBM buffer, mmap read)
 - **Added**: PipeWire screencast backend via xdg-desktop-portal (GNOME, KDE, X11)
 - **Added**: Auto-detection of capture backend at startup
 - **Added**: ACK feedback system — 6-byte control packet, client confirms frame, server re-sends lost tiles
 - **Added**: Auto-reconnect — stream survives WebRTC re-negotiations without restarting WebSocket
 
-## v0.202 (June 19, 2026)
+## [0.202] - 2026-06-19
 - Fixed duplicate function in webp_codec_bench
 - FPS metrics now correctly reflect fast-webp performance
 
-## v0.181 (June 18, 2026)
+## [0.181] - 2026-06-19
 - Upgraded webp 0.3 → fast-webp 0.1.1 (2–3× faster encoding)
 - Arc-based tile cache (zero-copy, ~120 MB/s bandwidth saved)
 - SIMD tile extraction (AVX2/SSE2)
 - 3× overall pipeline speedup
 
-## v0.160 (June 17, 2026)
+## [0.160] - 2026-06-17
 - Tile merging (83–99% reduction)
 - Zero-copy hashing with SIMD
 - CPU benchmark caching

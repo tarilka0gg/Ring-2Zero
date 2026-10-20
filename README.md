@@ -1,9 +1,6 @@
 # Ring-2Zero
 
-[![CI](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue.svg)](CHANGELOG.md)
-[![Contributing](https://img.shields.io/badge/contributing-CONTRIBUTING.md-blue.svg)](CONTRIBUTING.md)
+[![CI](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml/badge.svg)](https://github.com/tarilka0gg/Ring-2Zero/actions/workflows/ci.yml) [![License](https://img.shields.io/github/license/tarilka0gg/Ring-2Zero)](LICENSE) [![Release](https://img.shields.io/github/v/release/tarilka0gg/Ring-2Zero)](https://github.com/tarilka0gg/Ring-2Zero/releases) [![Changelog](https://img.shields.io/badge/changelog-CHANGELOG.md-blue)](CHANGELOG.md) [![Contributing](https://img.shields.io/badge/contributing-CONTRIBUTING.md-blue.svg)](CONTRIBUTING.md)
 
 A high-performance Wayland screen streaming server, written in Rust, that
 streams your desktop to any browser over WebRTC — no VNC client, no X11
@@ -353,7 +350,7 @@ VPN (like Tailscale above) rather than a public port-forward.
 ## Remote control
 
 Start the server with `--control` (or `RING2ZERO_CONTROL=1`) and a
-**КЕРУВАННЯ** button appears in the page's status bar. While it's on,
+**CONTROL** button appears in the page's status bar. While it's on,
 mouse, wheel and keyboard input over the picture is sent to the host.
 
 - Requires `zwlr_virtual_pointer_manager_v1` and
