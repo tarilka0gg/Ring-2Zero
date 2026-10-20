@@ -25,7 +25,9 @@ fn load_tls_acceptor(
     cert_path: Option<&str>,
     key_path: Option<&str>,
 ) -> std::result::Result<Option<TlsAcceptor>, String> {
-    let Some(cert_path) = cert_path else { return Ok(None) };
+    let Some(cert_path) = cert_path else {
+        return Ok(None);
+    };
     let key_path = key_path
         .ok_or_else(|| "RING2ZERO_TLS_CERT is set but RING2ZERO_TLS_KEY is not".to_string())?;
 
@@ -99,7 +101,10 @@ fn banner_text() -> String {
             out.push('\n');
         }
     }
-    let subtitle = format!("  Wayland screen streamer over WebRTC · v{}", env!("CARGO_PKG_VERSION"));
+    let subtitle = format!(
+        "  Wayland screen streamer over WebRTC · v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     if color {
         out.push_str(&format!("{COLOR}{subtitle}\x1b[0m\n"));
     } else {
@@ -136,6 +141,7 @@ fn help_text() -> String {
      \x20   -h, --help       Print this help and exit\n\
      \x20   --no-adaptive    Skip the startup CPU benchmark, use merge_gap=0\n\
      \x20   --debug          Verbose per-tile/per-frame stats every 100 frames\n\
+     \x20   --control        Let clients control this machine's mouse and keyboard\n\
      \n\
      Once running, open http://<this-machine>:9001 in a browser — the auth\n\
      token printed on startup is the connection password. No separate client\n\
@@ -147,6 +153,11 @@ fn help_text() -> String {
      \x20   RING2ZERO_ICE_INTERFACE   Restrict ICE candidate gathering to one interface\n\
      \x20   RING2ZERO_IPV4_ONLY       Set to exclude IPv6 ICE candidates\n\
      \x20   RING2ZERO_MAX_FPS         Cap target/static/dynamic FPS uniformly (1-1000)\n\
+     \x20   RING2ZERO_ICE_SERVERS     STUN/TURN for use across NAT, comma-separated:\n\
+     \x20                             stun:host:port,turn:user:pass@host:port\n\
+     \x20   RING2ZERO_CONTROL         Same as --control\n\
+     \x20   RING2ZERO_OUTPUT          Capture this named output (e.g. DP-1) instead of\n\
+     \x20                             the first one; falls back to the first if not found\n\
      \n\
      Don't have the r2zr alias yet? Run ./install.sh (or --no-alias to skip\n\
      everything else it does and just add the alias by hand — see its\n\
@@ -182,7 +193,10 @@ fn print_paged(text: &str) {
             let program = parts.next().unwrap_or_else(|| "less".to_string());
             (program, parts.collect())
         }
-        _ => ("less".to_string(), vec!["-R".to_string(), "-F".to_string(), "-X".to_string()]),
+        _ => (
+            "less".to_string(),
+            vec!["-R".to_string(), "-F".to_string(), "-X".to_string()],
+        ),
     };
 
     let child = std::process::Command::new(&program)
@@ -220,25 +234,51 @@ async fn main() -> Result<()> {
     // Set RUST_LOG=ice=debug,webrtc_ice=debug,mdns=debug,webrtc_mdns=debug for
     // verbose ICE/mDNS connectivity diagnostics (candidate gathering, STUN
     // checks, mDNS query results) when troubleshooting a connection.
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let debug = args.iter().any(|a| a == "--debug");
+    // webrtc-rs is noisy at warn: dtls flags every standard extension in a
+    // browser's ClientHello, and webrtc_ice every IPv6 link-local address it
+    // can't bind and every late STUN reply. Held to errors by default;
+    // RUST_LOG=webrtc_ice=debug brings them back when debugging ICE.
+    let default_filter = if debug {
+        "warn,dtls=error,webrtc_ice=error,screen_streamer=debug"
+    } else {
+        "warn,dtls=error,webrtc_ice=error,screen_streamer=info"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+        .init();
 
     // Auto-detect optimal config based on CPU performance
-    let mut config = if args.contains(&"--no-adaptive".to_string()) {
+    let mut config = if args.iter().any(|a| a == "--no-adaptive") {
         println!("⚠️  Adaptive mode disabled, using defaults");
         Config::default()
     } else {
         Config::with_auto_merge_gap()
     };
 
-    if args.contains(&"--debug".to_string()) {
+    if debug {
         config.debug_mode = true;
         println!("[DEBUG MODE ENABLED]");
+    }
+    if args.iter().any(|a| a == "--control") {
+        config.control = true;
+    }
+    if let Ok(spec) = std::env::var("RING2ZERO_ICE_SERVERS") {
+        match screen_streamer::ice::parse_ice_servers(&spec) {
+            Ok(servers) => config.ice_servers = servers,
+            Err(e) => {
+                eprintln!("Invalid RING2ZERO_ICE_SERVERS: {e}");
+                std::process::exit(2);
+            }
+        }
     }
 
     let addr = format!("0.0.0.0:{}", config.ws_port);
     let listener = TcpListener::bind(&addr).await?;
 
-    let tls_acceptor = match load_tls_acceptor(config.tls_cert_path.as_deref(), config.tls_key_path.as_deref()) {
+    let tls_acceptor = match load_tls_acceptor(
+        config.tls_cert_path.as_deref(),
+        config.tls_key_path.as_deref(),
+    ) {
         Ok(acceptor) => acceptor,
         Err(e) => {
             eprintln!("TLS setup failed: {e}");
@@ -246,7 +286,11 @@ async fn main() -> Result<()> {
         }
     };
     let ws_scheme = if tls_acceptor.is_some() { "wss" } else { "ws" };
-    let http_scheme = if tls_acceptor.is_some() { "https" } else { "http" };
+    let http_scheme = if tls_acceptor.is_some() {
+        "https"
+    } else {
+        "http"
+    };
 
     println!("WebRTC signaling server (WebSocket): {ws_scheme}://{addr}");
     if tls_acceptor.is_none() {
@@ -261,6 +305,17 @@ async fn main() -> Result<()> {
     println!("Target FPS: {}", config.target_fps.get());
     println!("Dynamic tiles: {} FPS", config.dynamic_tile_fps.get());
     println!("Static tiles: {} FPS", config.static_tile_fps.get());
+    if !config.ice_servers.is_empty() {
+        let urls: Vec<&str> = config
+            .ice_servers
+            .iter()
+            .flat_map(|s| s.urls.iter().map(String::as_str))
+            .collect();
+        println!("ICE servers: {}", urls.join(", "));
+    }
+    if config.control {
+        println!("⚠️  Remote control ENABLED — anyone with the token can use this machine's mouse and keyboard");
+    }
 
     loop {
         let (tcp_stream, _) = listener.accept().await?;

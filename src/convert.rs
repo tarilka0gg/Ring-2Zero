@@ -16,10 +16,10 @@ unsafe fn convert_bgrx_to_rgba_avx2(src: &[u8], dst: &mut [u8]) {
     //   Pixel 1: R=byte6, G=byte5, B=byte4, A=0xFF
     //   ...
     let shuffle = _mm256_setr_epi8(
-        2, 1, 0, -1,  6, 5, 4, -1,   // Lane 0: pixels 0-1
+        2, 1, 0, -1, 6, 5, 4, -1, // Lane 0: pixels 0-1
         10, 9, 8, -1, 14, 13, 12, -1, // Lane 0: pixels 2-3
-        2, 1, 0, -1,  6, 5, 4, -1,   // Lane 1: pixels 4-5
-        10, 9, 8, -1, 14, 13, 12, -1  // Lane 1: pixels 6-7
+        2, 1, 0, -1, 6, 5, 4, -1, // Lane 1: pixels 4-5
+        10, 9, 8, -1, 14, 13, 12, -1, // Lane 1: pixels 6-7
     );
 
     // Alpha channel (0xFF in the 4th byte of each pixel)
@@ -43,8 +43,8 @@ unsafe fn convert_bgrx_to_rgba_avx2(src: &[u8], dst: &mut [u8]) {
 #[target_feature(enable = "sse2")]
 unsafe fn convert_bgrx_to_rgba_sse2(src: &[u8], dst: &mut [u8]) {
     let shuffle = _mm_setr_epi8(
-        2, 1, 0, -1,  6, 5, 4, -1,   // Pixels 0-1
-        10, 9, 8, -1, 14, 13, 12, -1  // Pixels 2-3
+        2, 1, 0, -1, 6, 5, 4, -1, // Pixels 0-1
+        10, 9, 8, -1, 14, 13, 12, -1, // Pixels 2-3
     );
 
     let alpha = _mm_set1_epi32(0xFF000000u32 as i32);
@@ -75,18 +75,15 @@ pub fn convert_bgrx_to_rgba_inplace(src: &[u8], width: u32, height: u32, dst: &m
                 let avx2_pixels = (pixels / 8) * 8;
                 let avx2_bytes = avx2_pixels * 4;
 
-                convert_bgrx_to_rgba_avx2(
-                    &src[..avx2_bytes],
-                    &mut dst[..avx2_bytes]
-                );
+                convert_bgrx_to_rgba_avx2(&src[..avx2_bytes], &mut dst[..avx2_bytes]);
 
                 // Handle remainder (scalar)
                 for i in avx2_pixels..pixels {
                     let s = i * 4;
-                    dst[s] = src[s + 2];     // R
+                    dst[s] = src[s + 2]; // R
                     dst[s + 1] = src[s + 1]; // G
-                    dst[s + 2] = src[s];     // B
-                    dst[s + 3] = 255;        // A
+                    dst[s + 2] = src[s]; // B
+                    dst[s + 3] = 255; // A
                 }
 
                 return;
@@ -99,10 +96,7 @@ pub fn convert_bgrx_to_rgba_inplace(src: &[u8], width: u32, height: u32, dst: &m
                 let sse2_pixels = (pixels / 4) * 4;
                 let sse2_bytes = sse2_pixels * 4;
 
-                convert_bgrx_to_rgba_sse2(
-                    &src[..sse2_bytes],
-                    &mut dst[..sse2_bytes]
-                );
+                convert_bgrx_to_rgba_sse2(&src[..sse2_bytes], &mut dst[..sse2_bytes]);
 
                 // Handle remainder (scalar)
                 for i in sse2_pixels..pixels {
@@ -183,10 +177,26 @@ mod tests {
             assert_eq!(dst.len(), pixels * 4);
             for i in 0..pixels {
                 let s = i * 4;
-                assert_eq!(dst[s], src[s + 2], "R mismatch at pixel {i} for {pixels} pixels");
-                assert_eq!(dst[s + 1], src[s + 1], "G mismatch at pixel {i} for {pixels} pixels");
-                assert_eq!(dst[s + 2], src[s], "B mismatch at pixel {i} for {pixels} pixels");
-                assert_eq!(dst[s + 3], 255, "alpha must always be opaque at pixel {i} for {pixels} pixels");
+                assert_eq!(
+                    dst[s],
+                    src[s + 2],
+                    "R mismatch at pixel {i} for {pixels} pixels"
+                );
+                assert_eq!(
+                    dst[s + 1],
+                    src[s + 1],
+                    "G mismatch at pixel {i} for {pixels} pixels"
+                );
+                assert_eq!(
+                    dst[s + 2],
+                    src[s],
+                    "B mismatch at pixel {i} for {pixels} pixels"
+                );
+                assert_eq!(
+                    dst[s + 3],
+                    255,
+                    "alpha must always be opaque at pixel {i} for {pixels} pixels"
+                );
             }
         }
     }

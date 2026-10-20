@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use crate::frame::Frame;
+use crate::tile::{hash_tile, hash_tile_half, Tile, TileMetadata};
 use rayon::prelude::*;
 
 pub struct DiffDetector {
@@ -20,6 +20,10 @@ pub struct DiffDetector {
     frame_count: u64,
     skipped_hashes: u64,
     total_hashes: u64,
+    /// Multiplies `webp_quality_low`/`webp_quality_high`, set from outside
+    /// by `Pipeline::set_quality_scale` — see `bandwidth.rs`. 1.0 (no
+    /// effect) until anything says otherwise.
+    quality_scale: f32,
 }
 
 impl DiffDetector {
@@ -35,7 +39,12 @@ impl DiffDetector {
             frame_count: 0,
             skipped_hashes: 0,
             total_hashes: 0,
+            quality_scale: 1.0,
         }
+    }
+
+    pub fn set_quality_scale(&mut self, scale: f32) {
+        self.quality_scale = scale;
     }
 
     pub fn detect_changes(&mut self, frame: &Frame) -> (Vec<Tile>, Vec<usize>) {
@@ -45,51 +54,58 @@ impl DiffDetector {
         let width = frame.width;
         let height = frame.height;
 
-        let (tile_width, tile_height, tiles_y) = self.config.calculate_tile_dimensions(width, height);
-        let total_tiles = (tiles_y * self.config.tiles_x) as usize;
+        let grid = self.config.grid(width, height);
+        let (tile_width, tile_height, tiles_y) = (grid.tile_width, grid.tile_height, grid.tiles_y);
+        let total_tiles = grid.cell_count();
 
         let is_first_frame = self.prev_hashes.is_empty();
 
         if is_first_frame {
             self.prev_hashes = vec![0; total_tiles];
             self.prev_prev_hashes = vec![0; total_tiles];
-            self.tile_metadata.resize(total_tiles, TileMetadata::default());
+            self.tile_metadata
+                .resize(total_tiles, TileMetadata::default());
             self.damaged_tiles = vec![false; total_tiles];
             self.force_redetect = vec![false; total_tiles];
             self.changed_mask = vec![false; total_tiles];
         }
 
-        // Перевіряємо чи є damage regions від Wayland
+        // Check if damage regions are present from Wayland
         let has_damage = !frame.damage_regions.is_empty();
 
-        if self.config.debug_mode && self.frame_count % 100 == 0 {
+        if self.config.debug_mode && self.frame_count.is_multiple_of(100) {
             if has_damage {
-                println!("[Damage tracking] Received {} damage regions", frame.damage_regions.len());
+                log::debug!(
+                    "[Damage tracking] Received {} damage regions",
+                    frame.damage_regions.len()
+                );
             } else {
-                println!("[Damage tracking] No damage regions from Wayland compositor");
+                log::debug!("[Damage tracking] No damage regions from Wayland compositor");
             }
         }
 
-        // Створюємо набір тайлів що перетинаються з damage regions.
+        // Create a set of tiles intersecting with damage regions.
         // Only touched (and only needs touching) on frames that actually
         // carry damage info — damaged_tiles is never read when !has_damage,
         // so resetting it then would just be a wasted O(total_tiles) pass.
         if has_damage {
             self.damaged_tiles.iter_mut().for_each(|d| *d = false);
             for damage in &frame.damage_regions {
-                // Знаходимо всі тайли що перетинаються з цим damage region
+                // Find all tiles intersecting with this damage region
                 let tile_x_start = (damage.x / tile_width).min(self.config.tiles_x - 1);
                 let tile_y_start = (damage.y / tile_height).min(tiles_y - 1);
 
                 // Use saturating arithmetic to prevent overflow
-                let tile_x_end = damage.x
+                let tile_x_end = damage
+                    .x
                     .saturating_add(damage.width)
                     .saturating_add(tile_width)
                     .saturating_sub(1)
                     .saturating_div(tile_width)
                     .min(self.config.tiles_x);
 
-                let tile_y_end = damage.y
+                let tile_y_end = damage
+                    .y
                     .saturating_add(damage.height)
                     .saturating_add(tile_height)
                     .saturating_sub(1)
@@ -116,6 +132,7 @@ impl DiffDetector {
         let force_redetect_ref = &self.force_redetect;
         let frame_count = self.frame_count;
         let config = &self.config;
+        let quality_scale = self.quality_scale;
 
         // Single-pass parallel loop: hash ALL tiles + detect changes + build metadata.
         // Besides the tiles actually queued for sending, this also tracks
@@ -123,11 +140,29 @@ impl DiffDetector {
         // (`changed_unsent`) — their hash baseline still needs to advance and
         // their change_history still needs to reflect that they changed, even
         // though nothing was sent for them this frame.
-        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, changed_unsent, stats) = (0..total_tiles)
+        let (new_hashes, changed_tiles, tile_indices, tile_hashes_vec, changed_unsent, stats) = (0
+            ..total_tiles)
             .into_par_iter()
             .fold(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
-                |(mut hashes, mut tiles, mut indices, mut half_hashes, mut changed_unsent, mut stats), i| {
+                || {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        (0u64, 0u64, 0u64, 0u64, 0u64),
+                    )
+                },
+                |(
+                    mut hashes,
+                    mut tiles,
+                    mut indices,
+                    mut half_hashes,
+                    mut changed_unsent,
+                    mut stats,
+                ),
+                 i| {
                     // Damage-based skip only applies once we have a real previous
                     // frame to compare against — on the very first frame there is
                     // no prior content for the client at all, so every tile must
@@ -141,30 +176,30 @@ impl DiffDetector {
                     // re-detection (this was the actual root cause of tiles never
                     // recovering after an ACK-loss invalidation while damage
                     // tracking was active).
-                    if has_damage && !is_first_frame && !damaged_tiles_ref[i] && !force_redetect_ref[i] {
+                    if has_damage
+                        && !is_first_frame
+                        && !damaged_tiles_ref[i]
+                        && !force_redetect_ref[i]
+                    {
                         hashes.push((i, prev_hashes_ref[i]));
                         stats.1 += 1; // damage_skipped
                         return (hashes, tiles, indices, half_hashes, changed_unsent, stats);
                     }
 
-                    let ty = i as u32 / config.tiles_x;
-                    let tx = i as u32 % config.tiles_x;
-                    let x = tx * tile_width;
-                    let y = ty * tile_height;
-                    let tw = if tx == config.tiles_x - 1 { width - x } else { tile_width };
-                    let th = if ty == tiles_y - 1 { height - y } else { tile_height };
+                    let (x, y, tw, th) = grid.cell_rect(i);
 
                     // Compute half_hash ONCE
                     let half_hash = hash_tile_half(frame_data, x, y, tw, th, width);
 
-                    let full_hash = if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
-                        // Half хеш не змінився → Zero-copy!
-                        stats.0 += 1; // skipped_hashes
-                        prev_hashes_ref[i]
-                    } else {
-                        // Half хеш змінився → повний хеш
-                        hash_tile(frame_data, x, y, tw, th, width)
-                    };
+                    let full_hash =
+                        if !is_first_frame && half_hash == tile_metadata_ref[i].prev_half_hash {
+                            // Half hash unchanged → Zero-copy!
+                            stats.0 += 1; // skipped_hashes
+                            prev_hashes_ref[i]
+                        } else {
+                            // Half hash changed → full hash
+                            hash_tile(frame_data, x, y, tw, th, width)
+                        };
 
                     hashes.push((i, full_hash));
 
@@ -184,24 +219,30 @@ impl DiffDetector {
                     let was_sent_as_dynamic = tile_metadata_ref[i].last_sent_as_dynamic;
                     let frames_since_last = frame_count - tile_metadata_ref[i].last_sent_frame;
 
-                    // Розраховуємо інтервал відправки
+                    // Compute send interval
                     let interval = if is_dynamic {
                         config.target_fps.get() / config.dynamic_tile_fps.get()
                     } else {
                         config.target_fps.get() / config.static_tile_fps.get()
                     };
 
-                    // Перевіряємо чи треба відправляти
+                    // Check if sending is required
                     let should_send = is_first_frame
                         || (!was_sent_as_dynamic && is_dynamic)
                         || frames_since_last >= interval;
 
                     if should_send {
-                        let quality = if is_dynamic {
+                        let base_quality = if is_dynamic {
                             config.webp_quality_low
                         } else {
                             config.webp_quality_high
                         };
+                        // fast_webp requires quality in 0.0..=100.0; the
+                        // scale itself is already clamped to [MIN_SCALE, 1.0]
+                        // by BandwidthController, but re-clamp here too so a
+                        // future caller of set_quality_scale outside that
+                        // range can't hand fast_webp an invalid value.
+                        let quality = (base_quality * quality_scale).clamp(1.0, 100.0);
 
                         // Lock-free push to thread-local vectors
                         tiles.push(Tile::new(x, y, tw, th, quality));
@@ -227,7 +268,16 @@ impl DiffDetector {
                 },
             )
             .reduce(
-                || (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), (0u64, 0u64, 0u64, 0u64, 0u64)),
+                || {
+                    (
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                        (0u64, 0u64, 0u64, 0u64, 0u64),
+                    )
+                },
                 |(mut h1, mut t1, mut i1, mut hh1, mut cu1, s1), (h2, t2, i2, hh2, cu2, s2)| {
                     h1.extend(h2);
                     t1.extend(t2);
@@ -240,7 +290,13 @@ impl DiffDetector {
                         i1,
                         hh1,
                         cu1,
-                        (s1.0 + s2.0, s1.1 + s2.1, s1.2 + s2.2, s1.3 + s2.3, s1.4 + s2.4),
+                        (
+                            s1.0 + s2.0,
+                            s1.1 + s2.1,
+                            s1.2 + s2.2,
+                            s1.3 + s2.3,
+                            s1.4 + s2.4,
+                        ),
                     )
                 },
             );
@@ -262,16 +318,19 @@ impl DiffDetector {
         self.skipped_hashes += skipped;
         self.total_hashes += total_tiles as u64;
 
-        // Логуємо статистику кожні 100 кадрів (silent in benchmark mode)
-        if self.frame_count % 100 == 0 && self.config.debug_mode {
+        // Log stats every 100 frames (silent in benchmark mode)
+        if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
             let skip_percent = (self.skipped_hashes as f64 / self.total_hashes as f64) * 100.0;
             let cpu_savings = skip_percent * 0.5;
-            println!(
+            log::debug!(
                 "[Zero-copy stats] Skipped: {}/{} tiles ({:.1}%) | Est. CPU savings: {:.1}%",
-                self.skipped_hashes, self.total_hashes, skip_percent, cpu_savings
+                self.skipped_hashes,
+                self.total_hashes,
+                skip_percent,
+                cpu_savings
             );
             if has_damage {
-                println!(
+                log::debug!(
                     "[Damage tracking] Skipped {} tiles outside damage regions",
                     damage_skip
                 );
@@ -334,39 +393,33 @@ impl DiffDetector {
             self.changed_mask[i] = true;
         }
 
-        let changed_mask_ref = &self.changed_mask;
-        let unchanged_data: Vec<(usize, u32)> = (0..total_tiles)
-            .filter(|&i| !changed_mask_ref[i])
-            .map(|i| (i, self.tile_metadata[i].unchanged_frames))
-            .collect();
-
-        if !unchanged_data.is_empty() {
-            // Extract counters for SIMD increment
-            let mut counters: Vec<u32> = unchanged_data.iter().map(|(_, c)| *c).collect();
-
-            // SIMD batch increment
-            crate::tile::increment_unchanged_counters(&mut counters);
-
-            // Write back incremented counters
-            for (idx, (tile_idx, _)) in unchanged_data.iter().enumerate() {
-                self.tile_metadata[*tile_idx].unchanged_frames = counters[idx];
-
-                // Update change history
-                let meta = &mut self.tile_metadata[*tile_idx];
+        // Two allocations plus a gather/scatter used to wrap a SIMD +1 here;
+        // a direct in-place pass over the metadata is both simpler and faster.
+        for (meta, &changed) in self.tile_metadata.iter_mut().zip(&self.changed_mask) {
+            if !changed {
+                meta.unchanged_frames += 1;
                 meta.change_history.push(false);
             }
         }
 
-        // Логуємо статистику адаптивного FPS (тільки в debug режимі)
-        if self.frame_count % 100 == 0 && self.config.debug_mode {
-            println!("[Frame {}] Changed tiles: {}", self.frame_count, changed_tiles.len());
+        // Log adaptive FPS stats (only in debug mode)
+        if self.frame_count.is_multiple_of(100) && self.config.debug_mode {
+            log::debug!(
+                "[Frame {}] Changed tiles: {}",
+                self.frame_count,
+                changed_tiles.len()
+            );
             if skipped_by_fps > 0 {
-                println!("[Adaptive FPS] Skipped {} tiles due to FPS throttling", skipped_by_fps);
+                log::debug!(
+                    "[Adaptive FPS] Skipped {} tiles due to FPS throttling",
+                    skipped_by_fps
+                );
             }
             if dynamic_sent > 0 || static_sent > 0 {
-                println!(
+                log::debug!(
                     "[Adaptive FPS] Sent: {} dynamic (32 FPS), {} static (8 FPS)",
-                    dynamic_sent, static_sent
+                    dynamic_sent,
+                    static_sent
                 );
             }
         }
@@ -378,7 +431,7 @@ impl DiffDetector {
         &self.tile_metadata[index]
     }
 
-    // Optimization #3: Mutable access для update кешу
+    // Optimization #3: Mutable access for cache update
     pub fn get_metadata_mut(&mut self, index: usize) -> &mut TileMetadata {
         &mut self.tile_metadata[index]
     }
@@ -472,7 +525,12 @@ mod tests {
     }
 
     fn solid_frame(width: u32, height: u32, value: u8) -> Frame {
-        Frame::new(vec![value; (width * height * 4) as usize], width, height, vec![])
+        Frame::new(
+            vec![value; (width * height * 4) as usize],
+            width,
+            height,
+            vec![],
+        )
     }
 
     // A varied (position-dependent) fill, not a flat color: hash_tile's
@@ -488,9 +546,38 @@ mod tests {
             for col in x..x + w {
                 let offset = ((row * frame.width + col) * 4) as usize;
                 let v = seed.wrapping_add(((row * 7 + col * 13) % 251) as u8);
-                frame.rgba[offset..offset + 4].copy_from_slice(&[v, v.wrapping_add(1), v.wrapping_add(2), 255]);
+                frame.rgba[offset..offset + 4].copy_from_slice(&[
+                    v,
+                    v.wrapping_add(1),
+                    v.wrapping_add(2),
+                    255,
+                ]);
             }
         }
+    }
+
+    #[test]
+    fn quality_scale_multiplies_the_configured_quality() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.set_quality_scale(0.5);
+        let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
+        // First frame: every tile is "dynamic" is false the very first time
+        // (is_first_frame bypasses the dynamic check), so this uses
+        // webp_quality_high from test_config — see its own default below.
+        let expected = (test_config(2, 60, 60).webp_quality_high * 0.5).clamp(1.0, 100.0);
+        assert!(
+            changed.iter().all(|t| t.quality == expected),
+            "{:?}",
+            changed
+        );
+    }
+
+    #[test]
+    fn quality_scale_never_produces_an_out_of_range_quality() {
+        let mut detector = DiffDetector::new(test_config(2, 60, 60));
+        detector.set_quality_scale(1000.0); // deliberately absurd
+        let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
+        assert!(changed.iter().all(|t| (0.0..=100.0).contains(&t.quality)));
     }
 
     #[test]
@@ -533,18 +620,29 @@ mod tests {
         detector.detect_changes(&frame); // baseline
 
         // Damage region covering only cell (0,0) -> idx 0, not idx 3.
-        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+        let damage_elsewhere = vec![DamageRegion {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }];
 
         // Sanity check: without invalidation, tile 3 is skipped by damage tracking.
         let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
         let (_, indices) = detector.detect_changes(&f1);
-        assert!(!indices.contains(&3), "tile 3 shouldn't be touched without invalidation");
+        assert!(
+            !indices.contains(&3),
+            "tile 3 shouldn't be touched without invalidation"
+        );
 
         detector.invalidate_tiles(&[3]);
 
         let f2 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere);
         let (_, indices) = detector.detect_changes(&f2);
-        assert!(indices.contains(&3), "invalidated tile must be force-redetected even outside damage regions");
+        assert!(
+            indices.contains(&3),
+            "invalidated tile must be force-redetected even outside damage regions"
+        );
     }
 
     #[test]
@@ -553,7 +651,12 @@ mod tests {
         let frame = solid_frame(W, H, 0);
         detector.detect_changes(&frame);
 
-        let damage_elsewhere = vec![DamageRegion { x: 0, y: 0, width: 10, height: 10 }];
+        let damage_elsewhere = vec![DamageRegion {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        }];
         detector.invalidate_tiles(&[3]);
 
         let f1 = Frame::new(frame.rgba.clone(), W, H, damage_elsewhere.clone());
@@ -589,7 +692,11 @@ mod tests {
         paint_region(&mut frame3, 0, 0, 10, 10, 200);
         let (_, indices) = detector.detect_changes(&frame3); // frame 3: continuing change, now throttled
         assert!(!indices.contains(&0), "a continuing dynamic-tile change should be throttled by a large dynamic_tile_fps interval");
-        assert_eq!(detector.get_metadata(0).unchanged_frames, 0, "throttled-but-changed tile must not be counted as unchanged");
+        assert_eq!(
+            detector.get_metadata(0).unchanged_frames,
+            0,
+            "throttled-but-changed tile must not be counted as unchanged"
+        );
         assert_eq!(
             detector.get_current_hashes()[0],
             hash_tile(&frame3.rgba, 0, 0, 10, 10, W),
@@ -605,14 +712,24 @@ mod tests {
         let mut frame2 = solid_frame(W, H, 0);
         paint_region(&mut frame2, 0, 0, 10, 10, 100);
         detector.detect_changes(&frame2); // first change -> classified dynamic, sent immediately
-        assert!(detector.get_metadata(0).last_sent_as_dynamic, "tile 0 should be classified dynamic after its first change");
+        assert!(
+            detector.get_metadata(0).last_sent_as_dynamic,
+            "tile 0 should be classified dynamic after its first change"
+        );
 
         let hash_before = detector.get_current_hashes()[0];
-        assert_ne!(hash_before, 0, "sanity: baseline actually moved off the initial zero");
+        assert_ne!(
+            hash_before, 0,
+            "sanity: baseline actually moved off the initial zero"
+        );
 
         detector.invalidate_cache();
         assert_eq!(detector.get_metadata(0).cached_hash, 0);
-        assert_eq!(detector.get_current_hashes()[0], 0, "dynamic tile's hash baseline must be reset by invalidate_cache");
+        assert_eq!(
+            detector.get_current_hashes()[0],
+            0,
+            "dynamic tile's hash baseline must be reset by invalidate_cache"
+        );
     }
 
     #[test]
@@ -622,6 +739,10 @@ mod tests {
         detector.reset();
 
         let (changed, _) = detector.detect_changes(&solid_frame(W, H, 0));
-        assert_eq!(changed.len(), 4, "after reset, the next frame should be treated as the first frame again");
+        assert_eq!(
+            changed.len(),
+            4,
+            "after reset, the next frame should be treated as the first frame again"
+        );
     }
 }

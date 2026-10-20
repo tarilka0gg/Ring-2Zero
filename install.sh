@@ -136,7 +136,7 @@ pkg_name_for() {
         portage:libpipewire-0.3)  echo "media-video/pipewire" ;;
         portage:dbus-1)           echo "sys-apps/dbus" ;;
         portage:pkg-config)       echo "dev-util/pkgconf" ;;
-        portage:clang)            echo "sys-devel/clang" ;;
+        portage:clang)            echo "llvm-core/clang" ;;
 
         apt:wayland-client)   echo "libwayland-dev" ;;
         apt:gbm)              echo "libgbm-dev" ;;

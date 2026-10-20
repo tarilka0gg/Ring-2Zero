@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>216761460+tarilka0gg@users.noreply.github.com</email>
+		<name>tarilka0gg</name>
+	</maintainer>
+	<longdescription>
+		A Wayland screen streaming server: tile-diffed WebP frames over a WebRTC DataChannel to any browser,
+		with the client page embedded in the binary. wlr-screencopy DMA-BUF capture, or PipeWire for GNOME/KDE.
+	</longdescription>
+	<use>
+		<flag name="pipewire">Capture through PipeWire and xdg-desktop-portal (GNOME, KDE) in addition to wlr-screencopy</flag>
+	</use>
+	<upstream>
+		<remote-id type="github">tarilka0gg/Ring-2Zero</remote-id>
+		<bugs-to>https://github.com/tarilka0gg/Ring-2Zero/issues</bugs-to>
+	</upstream>
+</pkgmetadata>

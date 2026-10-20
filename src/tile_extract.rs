@@ -1,5 +1,5 @@
-/// SIMD-optimized tile extraction
-/// Copies tile data from frame buffer to contiguous tile buffer
+//! SIMD-optimized tile extraction: copies a tile out of the frame buffer
+//! into a contiguous tile buffer.
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -82,12 +82,13 @@ pub fn extract_tile(
 /// AVX2 tile extraction - copies 32 bytes per iteration
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)] // flat args keep the hot loop free of indirection
 unsafe fn extract_tile_rows_avx2(
     frame_rgba: &[u8],
     tile_buffer: &mut [u8],
     tile_x: u32,
     tile_y: u32,
-    _tile_width: u32,
+    tile_width: u32,
     tile_height: u32,
     frame_width: u32,
     row_bytes: usize,
@@ -97,7 +98,7 @@ unsafe fn extract_tile_rows_avx2(
 
     for row in 0..tile_height {
         let src_offset = (((tile_y + row) * frame_width + tile_x) * 4) as usize;
-        let dst_offset = (row * _tile_width * 4) as usize;
+        let dst_offset = (row * tile_width * 4) as usize;
 
         // Copy 32-byte chunks with AVX2
         for chunk in 0..chunks_per_row {
@@ -121,12 +122,13 @@ unsafe fn extract_tile_rows_avx2(
 /// SSE2 tile extraction - copies 16 bytes per iteration
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
+#[allow(clippy::too_many_arguments)] // flat args keep the hot loop free of indirection
 unsafe fn extract_tile_rows_sse2(
     frame_rgba: &[u8],
     tile_buffer: &mut [u8],
     tile_x: u32,
     tile_y: u32,
-    _tile_width: u32,
+    tile_width: u32,
     tile_height: u32,
     frame_width: u32,
     row_bytes: usize,
@@ -136,7 +138,7 @@ unsafe fn extract_tile_rows_sse2(
 
     for row in 0..tile_height {
         let src_offset = (((tile_y + row) * frame_width + tile_x) * 4) as usize;
-        let dst_offset = (row * _tile_width * 4) as usize;
+        let dst_offset = (row * tile_width * 4) as usize;
 
         // Copy 16-byte chunks with SSE2
         for chunk in 0..chunks_per_row {
@@ -192,11 +194,8 @@ mod tests {
 
     #[test]
     fn test_extract_tile_partial_width() {
-        let mut frame = vec![0u8; 1920 * 1080 * 4];
-        // Fill test pattern
-        for i in 0..frame.len() {
-            frame[i] = (i % 256) as u8;
-        }
+        // Test pattern: each byte is its offset mod 256
+        let frame: Vec<u8> = (0..1920 * 1080 * 4).map(|i| (i % 256) as u8).collect();
 
         let mut tile = vec![0u8; 48 * 27 * 4];
         extract_tile(&frame, &mut tile, 100, 50, 48, 27, 1920);

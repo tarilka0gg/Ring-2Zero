@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>io.github.tarilka0gg.Ring2Zero</id>
+  <name>Ring-2Zero</name>
+  <developer id="io.github.tarilka0gg"><name>tarilka0gg</name></developer>
+  <summary>Stream a Wayland desktop to any browser over WebRTC</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      Ring-2Zero captures a Wayland output (wlr-screencopy DMA-BUF on wlroots compositors, PipeWire on GNOME and
+      KDE), sends only the tiles that changed, and serves the browser client from the same binary. Open the
+      printed URL and enter the token; optional remote mouse and keyboard control.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.tarilka0gg.Ring2Zero.desktop</launchable>
+  <url type="homepage">https://github.com/tarilka0gg/Ring-2Zero</url>
+  <url type="bugtracker">https://github.com/tarilka0gg/Ring-2Zero/issues</url>
+  <provides><binary>ring-2zero</binary><binary>r2zr</binary></provides>
+  <releases><release version="0.400.0" date="2026-10-05"/></releases>
+  <content_rating type="oars-1.1"/>
+</component>

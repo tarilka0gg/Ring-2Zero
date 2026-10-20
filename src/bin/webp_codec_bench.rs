@@ -1,6 +1,5 @@
 /// WebP Codec Benchmark
 /// Compares webp, webpx, fast-webp, and webp-rust implementations
-
 use std::time::Instant;
 
 fn generate_test_tile(width: u32, height: u32, pattern: &str) -> Vec<u8> {
@@ -83,7 +82,7 @@ fn bench_fast_webp_current(data: &[u8], width: u32, height: u32, quality: f32) -
             output_size: 0,
             success: false,
             error: Some(format!("{:?}", e)),
-        }
+        },
     }
 }
 
@@ -139,7 +138,7 @@ fn bench_webpx(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResul
             output_size: 0,
             success: false,
             error: Some(format!("{:?}", e)),
-        }
+        },
     }
 }
 
@@ -153,7 +152,6 @@ fn bench_webpx(_data: &[u8], _width: u32, _height: u32, _quality: f32) -> BenchR
         error: Some("Not compiled with webp_bench feature".to_string()),
     }
 }
-
 
 #[cfg(feature = "webp_bench")]
 fn bench_webp_rust(data: &[u8], width: u32, height: u32, quality: f32) -> BenchResult {
@@ -170,9 +168,9 @@ fn bench_webp_rust(data: &[u8], width: u32, height: u32, quality: f32) -> BenchR
 
     let result = encode_lossy(
         &buffer,
-        0,  // optimize: 0 = fast
+        0, // optimize: 0 = fast
         quality as usize,
-        None  // no EXIF
+        None, // no EXIF
     );
 
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -191,7 +189,7 @@ fn bench_webp_rust(data: &[u8], width: u32, height: u32, quality: f32) -> BenchR
             output_size: 0,
             success: false,
             error: Some(format!("{:?}", e)),
-        }
+        },
     }
 }
 
@@ -208,13 +206,23 @@ fn bench_webp_rust(_data: &[u8], _width: u32, _height: u32, _quality: f32) -> Be
 
 fn print_results(pattern: &str, width: u32, height: u32, results: &[BenchResult]) {
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Pattern: {} ({}×{} = {} pixels)", pattern, width, height, width * height);
+    println!(
+        "Pattern: {} ({}×{} = {} pixels)",
+        pattern,
+        width,
+        height,
+        width * height
+    );
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    println!("{:<25} {:>12} {:>12} {:>10}", "Codec", "Time (ms)", "Size (KB)", "Speed");
+    println!(
+        "{:<25} {:>12} {:>12} {:>10}",
+        "Codec", "Time (ms)", "Size (KB)", "Speed"
+    );
     println!("{}", "─".repeat(65));
 
-    let baseline_time = results.iter()
+    let baseline_time = results
+        .iter()
         .find(|r| r.name.contains("fast-webp") && r.name.contains("current"))
         .map(|r| r.encode_time_ms)
         .unwrap_or(1.0);
@@ -235,7 +243,10 @@ fn print_results(pattern: &str, width: u32, height: u32, results: &[BenchResult]
                 result.name,
                 "FAILED",
                 "-",
-                result.error.as_ref().unwrap_or(&"Unknown error".to_string())
+                result
+                    .error
+                    .as_ref()
+                    .unwrap_or(&"Unknown error".to_string())
             );
         }
     }
@@ -254,10 +265,10 @@ fn main() {
     }
 
     let test_cases = vec![
-        ("gradient", 96, 54),   // Typical tile size (tiles_x=20)
-        ("text", 96, 54),       // UI/text pattern
-        ("noise", 96, 54),      // Worst case
-        ("gradient", 120, 68),  // Larger tile (tiles_x=16)
+        ("gradient", 96, 54),  // Typical tile size (tiles_x=20)
+        ("text", 96, 54),      // UI/text pattern
+        ("noise", 96, 54),     // Worst case
+        ("gradient", 120, 68), // Larger tile (tiles_x=16)
     ];
 
     let quality = 75.0;

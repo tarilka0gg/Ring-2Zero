@@ -23,3 +23,4 @@ test_benchmark.rs
 librust_out.rlib
 SETUP.md
 docs/client-examples/test.html
+/dist

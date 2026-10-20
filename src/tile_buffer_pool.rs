@@ -1,8 +1,7 @@
+use crossbeam::queue::SegQueue;
 /// Thread-safe pool of reusable tile buffers
 /// Reduces allocations by reusing Vec<u8> buffers for tile extraction
-
 use std::sync::Arc;
-use crossbeam::queue::SegQueue;
 
 pub struct TileBufferPool {
     buffers: Arc<SegQueue<Vec<u8>>>,
